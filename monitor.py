@@ -3,7 +3,7 @@ import time
 import requests
 import re
 
-# 🔐 CONFIGURA ESTO
+# 🔐 TUS DATOS
 TELEGRAM_TOKEN = "8632039135:AAFkPsgrU6Dl-eqsOtBgOuvKCBTWnqytlRo"
 CHAT_ID = "2057493748"
 
@@ -13,7 +13,6 @@ HEADERS = {
 
 ULTIMO_ESTADO = {}
 
-# 🌐 Obtener HTML
 def obtener_html(url):
     try:
         r = requests.get(url, headers=HEADERS, timeout=20)
@@ -23,7 +22,6 @@ def obtener_html(url):
         print(f"Error al abrir URL: {e}")
         return None
 
-# 🧠 Extraer BUYBOX real
 def extraer_buybox(html):
     if not html:
         return None, None
@@ -39,7 +37,6 @@ def extraer_buybox(html):
 
     return seller, price
 
-# 📲 Enviar a Telegram
 def enviar_telegram(mensaje):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -47,11 +44,14 @@ def enviar_telegram(mensaje):
             "chat_id": CHAT_ID,
             "text": mensaje
         }
-        requests.post(url, data=payload)
+        r = requests.post(url, data=payload, timeout=20)
+
+        print("Telegram status:", r.status_code)
+        print("Telegram response:", r.text)
+
     except Exception as e:
         print(f"Error enviando Telegram: {e}")
 
-# 🚨 Alerta
 def alerta(sku_liverpool, sku_patish, producto, url, seller, price):
     mensaje = f"""🚨 PERDISTE BUYBOX
 
@@ -63,11 +63,9 @@ Precio: ${price}
 
 {url}
 """
-
     print(mensaje)
     enviar_telegram(mensaje)
 
-# 🔁 Monitor principal
 def monitorear():
     global ULTIMO_ESTADO
 
@@ -104,17 +102,18 @@ def monitorear():
 
             print(f"Estado: {estado_actual}")
 
-            # 🚨 Solo alerta cuando pierdes
+            # 🚨 alerta SOLO cuando pierdes
             if estado_actual == "PERDIDO" and estado_anterior != "PERDIDO":
                 alerta(sku_liverpool, sku_patish, producto, url, seller, price)
 
             ULTIMO_ESTADO[sku_liverpool] = estado_actual
 
-# 🚀 Ejecutar
+
 if __name__ == "__main__":
     print("🔥 Monitor REAL de BuyBox iniciado")
 
-    enviar_telegram("✅ Prueba de Telegram desde Railway")  # prueba
+    # ✅ PRUEBA INMEDIATA
+    enviar_telegram("✅ Prueba de Telegram desde Railway")
 
     while True:
         monitorear()
