@@ -114,6 +114,8 @@ def monitorear():
 if __name__ == "__main__":
     print("🔥 Monitor REAL de BuyBox iniciado")
 
+    enviar_telegram("✅ Prueba de Telegram desde Railway")  # prueba
+
     while True:
         monitorear()
         print("\nEsperando 120 segundos...\n")
