@@ -69,8 +69,10 @@ def monitorear():
 
         for row in reader:
             sku = row["sku"]
-            url = row["url"]
-            tu_seller = row["tu_nombre_seller"]
+url = row["url"]
+tu_seller = row["tu_nombre_seller"]
+producto = row["nombre_producto"]
+sku_patish = row["sku_patish"]
 
             print(f"\nRevisando {sku}...")
 
