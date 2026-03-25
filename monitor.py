@@ -2,9 +2,10 @@ import csv
 import time
 import requests
 import re
+from datetime import datetime
 
 # 🔐 TUS DATOS
-TELEGRAM_TOKEN = "8632039135:AAFkPsgrU6Dl-eqsOtBgOuvKCBTWnqytlRo"
+TELEGRAM_TOKEN = "TU_TOKEN_NUEVO_AQUI"
 CHAT_ID = "2057493748"
 
 HEADERS = {
@@ -12,6 +13,8 @@ HEADERS = {
 }
 
 ULTIMO_ESTADO = {}
+ARCHIVO_HISTORIAL = "historial_buybox.csv"
+
 
 def obtener_html(url):
     try:
@@ -21,6 +24,7 @@ def obtener_html(url):
     except Exception as e:
         print(f"Error al abrir URL: {e}")
         return None
+
 
 def extraer_buybox(html):
     if not html:
@@ -37,6 +41,7 @@ def extraer_buybox(html):
 
     return seller, price
 
+
 def enviar_telegram(mensaje):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -45,12 +50,11 @@ def enviar_telegram(mensaje):
             "text": mensaje
         }
         r = requests.post(url, data=payload, timeout=20)
-
         print("Telegram status:", r.status_code)
         print("Telegram response:", r.text)
-
     except Exception as e:
         print(f"Error enviando Telegram: {e}")
+
 
 def alerta(sku_liverpool, sku_patish, producto, url, seller, price):
     mensaje = f"""🚨 PERDISTE BUYBOX
@@ -65,6 +69,42 @@ Precio: ${price}
 """
     print(mensaje)
     enviar_telegram(mensaje)
+
+
+def inicializar_historial():
+    try:
+        with open(ARCHIVO_HISTORIAL, "x", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "fecha_hora",
+                "sku_liverpool",
+                "sku_patish",
+                "producto",
+                "seller_buybox",
+                "precio_buybox",
+                "estado",
+                "url"
+            ])
+    except FileExistsError:
+        pass
+
+
+def guardar_historial(sku_liverpool, sku_patish, producto, seller, price, estado, url):
+    fecha_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    with open(ARCHIVO_HISTORIAL, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            fecha_hora,
+            sku_liverpool,
+            sku_patish,
+            producto,
+            seller,
+            price,
+            estado,
+            url
+        ])
+
 
 def monitorear():
     global ULTIMO_ESTADO
@@ -102,8 +142,17 @@ def monitorear():
 
             print(f"Estado: {estado_actual}")
 
-            # 🚨 alerta SOLO cuando pierdes
-            if estado_actual == "PERDIDO" and estado_anterior != "PERDIDO":
+            guardar_historial(
+                sku_liverpool=sku_liverpool,
+                sku_patish=sku_patish,
+                producto=producto,
+                seller=seller,
+                price=price,
+                estado=estado_actual,
+                url=url
+            )
+
+            if estado_actual == "PERDIDO" and estado_anterior == "GANANDO":
                 alerta(sku_liverpool, sku_patish, producto, url, seller, price)
 
             ULTIMO_ESTADO[sku_liverpool] = estado_actual
@@ -111,9 +160,7 @@ def monitorear():
 
 if __name__ == "__main__":
     print("🔥 Monitor REAL de BuyBox iniciado")
-
-    # ✅ PRUEBA INMEDIATA
-    enviar_telegram("✅ Prueba de Telegram desde Railway")
+    inicializar_historial()
 
     while True:
         monitorear()
