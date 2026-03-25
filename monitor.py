@@ -2,7 +2,6 @@ import csv
 import time
 import requests
 import re
-import os
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0"
@@ -16,7 +15,7 @@ def obtener_html(url):
         r.raise_for_status()
         return r.text
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error al abrir URL: {e}")
         return None
 
 def extraer_buybox(html):
@@ -33,33 +32,15 @@ def extraer_buybox(html):
     seller = match.group(2)
 
     return seller, price
-    if not html:
-        return None, None
 
-    # Buscar bloque bestOffer
-    match = re.search(r'"bestOffer":\{(.*?)\}', html)
-
-    if not match:
-        return None, None
-
-    bloque = match.group(1)
-
-    # Seller
-    seller_match = re.search(r'"sellerName":"(.*?)"', bloque)
-    seller = seller_match.group(1) if seller_match else None
-
-    # Precio
-    price_match = re.search(r'"salePrice":"?(\d+(?:\.\d+)?)"?', bloque)
-    price = price_match.group(1) if price_match else None
-
-    return seller, price
-
-def alerta(sku, url, seller, price):
-    print(f"\n🚨 PERDISTE BUYBOX en {sku}")
-    print(f"Nuevo seller: {seller}")
+def alerta(sku_liverpool, sku_patish, producto, url, seller, price):
+    print("\n🚨 PERDISTE BUYBOX")
+    print(f"SKU Liverpool: {sku_liverpool}")
+    print(f"SKU PATISH: {sku_patish}")
+    print(f"Producto: {producto}")
+    print(f"Seller: {seller}")
     print(f"Precio: ${price}")
-    print(url)
-    os.system('say "Perdiste el buybox"')
+    print(f"URL: {url}")
 
 def monitorear():
     global ULTIMO_ESTADO
@@ -68,13 +49,13 @@ def monitorear():
         reader = csv.DictReader(f)
 
         for row in reader:
-            sku = row["sku"]
-url = row["url"]
-tu_seller = row["tu_nombre_seller"]
-producto = row["nombre_producto"]
-sku_patish = row["sku_patish"]
+            sku_liverpool = row["sku"]
+            url = row["url"]
+            tu_seller = row["tu_nombre_seller"]
+            producto = row["nombre_producto"]
+            sku_patish = row["sku_patish"]
 
-            print(f"\nRevisando {sku}...")
+            print(f"\nRevisando {sku_liverpool} - {producto}...")
 
             html = obtener_html(url)
             if not html:
@@ -86,24 +67,25 @@ sku_patish = row["sku_patish"]
                 print("No se pudo detectar buybox")
                 continue
 
-            print(f"Buybox: {seller} | ${price}")
+            print(f"Buybox: {seller} | ${price} | {producto}")
 
             if seller.lower() == tu_seller.lower():
                 estado_actual = "GANANDO"
             else:
                 estado_actual = "PERDIDO"
 
-            estado_anterior = ULTIMO_ESTADO.get(sku)
+            estado_anterior = ULTIMO_ESTADO.get(sku_liverpool)
 
             print(f"Estado: {estado_actual}")
 
-            if estado_anterior == "GANANDO" and estado_actual == "PERDIDO":
-                alerta(sku, url, seller, price)
+            if estado_actual == "PERDIDO" and estado_anterior != "PERDIDO":
+                alerta(sku_liverpool, sku_patish, producto, url, seller, price)
 
-            ULTIMO_ESTADO[sku] = estado_actual
+            ULTIMO_ESTADO[sku_liverpool] = estado_actual
 
 if __name__ == "__main__":
     print("🔥 Monitor REAL de BuyBox iniciado")
+
     while True:
         monitorear()
         print("\nEsperando 120 segundos...\n")
