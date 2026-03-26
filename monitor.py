@@ -3,6 +3,8 @@ import time
 import requests
 import re
 from datetime import datetime
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # 🔐 TUS DATOS
 TELEGRAM_TOKEN = "TU_TOKEN_NUEVO_AQUI"
@@ -14,6 +16,23 @@ HEADERS = {
 
 ULTIMO_ESTADO = {}
 ARCHIVO_HISTORIAL = "historial_buybox.csv"
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, format, *args):
+        return
+
+
+def iniciar_servidor():
+    server = HTTPServer(("0.0.0.0", 8080), HealthHandler)
+    print("🌐 Servidor healthcheck activo en puerto 8080")
+    server.serve_forever()
 
 
 def obtener_html(url):
@@ -162,7 +181,10 @@ if __name__ == "__main__":
     print("🔥 Monitor REAL de BuyBox iniciado")
     inicializar_historial()
 
+    threading.Thread(target=iniciar_servidor, daemon=True).start()
+
     while True:
+        print(f"⏱️ Heartbeat: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         monitorear()
         print("\nEsperando 120 segundos...\n")
         time.sleep(120)
