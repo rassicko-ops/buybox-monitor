@@ -31,7 +31,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def iniciar_servidor():
     server = HTTPServer(("0.0.0.0", 8080), HealthHandler)
-    print("🌐 Servidor healthcheck activo en puerto 8080")
+    print("🌐 Healthcheck activo en puerto 8080")
     server.serve_forever()
 
 
@@ -41,7 +41,7 @@ def obtener_html(url):
         r.raise_for_status()
         return r.text
     except Exception as e:
-        print(f"Error al abrir URL: {e}")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Error al abrir URL: {e}")
         return None
 
 
@@ -68,16 +68,15 @@ def enviar_telegram(mensaje):
             "chat_id": CHAT_ID,
             "text": mensaje
         }
-        r = requests.post(url, data=payload, timeout=20)
-        print("Telegram status:", r.status_code)
-        print("Telegram response:", r.text)
+        requests.post(url, data=payload, timeout=20)
     except Exception as e:
-        print(f"Error enviando Telegram: {e}")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Error enviando Telegram: {e}")
 
 
 def alerta(sku_liverpool, sku_patish, producto, url, seller, price):
     mensaje = f"""🚨 PERDISTE BUYBOX
 
+Hora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 SKU Liverpool: {sku_liverpool}
 SKU PATISH: {sku_patish}
 Producto: {producto}
@@ -125,6 +124,18 @@ def guardar_historial(sku_liverpool, sku_patish, producto, seller, price, estado
         ])
 
 
+def imprimir_bloque(fecha_hora, sku_liverpool, sku_patish, producto, seller, price, estado):
+    print("\n" + "=" * 60)
+    print(f"[{fecha_hora}]")
+    print(f"SKU Liverpool: {sku_liverpool}")
+    print(f"SKU PATISH: {sku_patish}")
+    print(f"Producto: {producto}")
+    print(f"Buybox: {seller}")
+    print(f"Precio: ${price}")
+    print(f"Estado: {estado}")
+    print("=" * 60)
+
+
 def monitorear():
     global ULTIMO_ESTADO
 
@@ -132,13 +143,13 @@ def monitorear():
         reader = csv.DictReader(f)
 
         for row in reader:
+            fecha_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
             sku_liverpool = row["sku"]
             url = row["url"]
             tu_seller = row["tu_nombre_seller"]
             producto = row["nombre_producto"]
             sku_patish = row["sku_patish"]
-
-            print(f"\nRevisando {sku_liverpool} - {producto}...")
 
             html = obtener_html(url)
             if not html:
@@ -147,19 +158,27 @@ def monitorear():
             seller, price = extraer_buybox(html)
 
             if not seller:
+                print(f"\n[{fecha_hora}]")
+                print(f"SKU Liverpool: {sku_liverpool}")
+                print(f"Producto: {producto}")
                 print("No se pudo detectar buybox")
+                print("-" * 60)
                 continue
-
-            print(f"Buybox: {seller} | ${price} | {producto}")
 
             if seller.lower() == tu_seller.lower():
                 estado_actual = "GANANDO"
             else:
                 estado_actual = "PERDIDO"
 
-            estado_anterior = ULTIMO_ESTADO.get(sku_liverpool)
-
-            print(f"Estado: {estado_actual}")
+            imprimir_bloque(
+                fecha_hora=fecha_hora,
+                sku_liverpool=sku_liverpool,
+                sku_patish=sku_patish,
+                producto=producto,
+                seller=seller,
+                price=price,
+                estado=estado_actual
+            )
 
             guardar_historial(
                 sku_liverpool=sku_liverpool,
@@ -170,6 +189,8 @@ def monitorear():
                 estado=estado_actual,
                 url=url
             )
+
+            estado_anterior = ULTIMO_ESTADO.get(sku_liverpool)
 
             if estado_actual == "PERDIDO" and estado_anterior == "GANANDO":
                 alerta(sku_liverpool, sku_patish, producto, url, seller, price)
@@ -184,7 +205,11 @@ if __name__ == "__main__":
     threading.Thread(target=iniciar_servidor, daemon=True).start()
 
     while True:
-        print(f"⏱️ Heartbeat: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("\n" + "#" * 60)
+        print(f"⏱️ CICLO INICIADO: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("#" * 60)
+
         monitorear()
-        print("\nEsperando 120 segundos...\n")
+
+        print(f"\n⏳ Esperando 120 segundos...")
         time.sleep(120)
