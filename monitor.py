@@ -2,88 +2,81 @@ import csv
 import time
 import requests
 import re
-from datetime import datetime
+import os
 import threading
+from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# 🔐 VARIABLES (usa Railway)
-import os
+# ================================
+# CONFIG TELEGRAM (usa variables en Railway)
+# ================================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+# ================================
+# HEADERS
+# ================================
 HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
 
 ULTIMO_ESTADO = {}
-ULTIMO_RESUMEN = time.time()
 
-# ==============================
-# SERVER PARA RAILWAY
-# ==============================
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
+# ================================
+# TELEGRAM
+# ================================
+def enviar_telegram(mensaje):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("⚠️ Telegram no configurado")
+        return
 
-def iniciar_servidor():
-    server = HTTPServer(("0.0.0.0", 8080), HealthHandler)
-    server.serve_forever()
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-# ==============================
-# FUNCIONES
-# ==============================
+    try:
+        requests.post(url, json={
+            "chat_id": CHAT_ID,
+            "text": mensaje
+        }, timeout=10)
+    except Exception as e:
+        print(f"Error Telegram: {e}")
+
+# ================================
+# HTML
+# ================================
 def obtener_html(url):
     try:
         r = requests.get(url, headers=HEADERS, timeout=20)
         return r.text
-    except:
+    except Exception as e:
+        print(f"Error HTML: {e}")
         return None
 
+# ================================
+# EXTRAER BUYBOX
+# ================================
 def extraer_buybox(html):
-    patron = r'"bestOffer":\{.*?"salePrice":"?(\d+(?:\.\d+)?)"?.*?"sellerName":"(.*?)".*?\}'
-    match = re.search(patron, html, re.DOTALL)
+    if not html:
+        return None, None
+
+    patron = r'"sellerName":"(.*?)".*?"salePrice":"(\d+)"'
+    match = re.search(patron, html)
 
     if not match:
         return None, None
 
-    return match.group(2), match.group(1)
+    seller = match.group(1)
+    price = match.group(2)
 
-def enviar_telegram(mensaje):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": mensaje}, timeout=10)
-    except:
-        pass
+    return seller, price
 
-# ==============================
-# ALERTA (INMEDIATA)
-# ==============================
-def alerta(sku, sku_patish, producto, seller, price):
-    mensaje = f"""🚨 PERDISTE BUYBOX
-
-🛍️ {producto}
-
-SKU Liverpool: {sku}
-SKU PATISH: {sku_patish}
-
-🏪 Competidor: {seller}
-💰 Precio: ${price}
-
-🧠 Acción sugerida: bajar $1
-"""
-    enviar_telegram(mensaje)
-
-# ==============================
+# ================================
 # MONITOREO
-# ==============================
+# ================================
 def monitorear():
-    global ULTIMO_ESTADO, ULTIMO_RESUMEN
 
     ganando = 0
-    perdido = 0
-    resumen_lineas = []
+    perdiendo = 0
+    resumen = []
 
     with open("skus.csv", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -96,63 +89,91 @@ def monitorear():
             sku_patish = row["sku_patish"]
 
             html = obtener_html(url)
-            if not html:
-                continue
-
             seller, price = extraer_buybox(html)
+
             if not seller:
                 continue
 
             if seller.lower() == tu_seller.lower():
                 estado = "GANANDO"
                 ganando += 1
-                emoji = "🟢"
             else:
                 estado = "PERDIDO"
-                perdido += 1
-                emoji = "🔴"
+                perdiendo += 1
 
-            # ALERTA SOLO SI CAMBIAS A PERDIDO
+            # ALERTA SOLO SI PIERDES
             estado_anterior = ULTIMO_ESTADO.get(sku)
-            if estado == "PERDIDO" and estado_anterior == "GANANDO":
-                alerta(sku, sku_patish, producto, seller, price)
+
+            if estado_anterior == "GANANDO" and estado == "PERDIDO":
+                alerta = f"""🚨 PERDISTE BUYBOX
+
+SKU Liverpool: {sku}
+SKU PATISH: {sku_patish}
+Producto: {producto}
+Seller: {seller}
+Precio: ${price}
+
+{url}
+"""
+                enviar_telegram(alerta)
 
             ULTIMO_ESTADO[sku] = estado
 
-            # LINEA RESUMEN
-            resumen_lineas.append(
-                f"{emoji} {sku} | {seller} | ${price}"
-            )
+            resumen.append(f"{producto[:25]}... → {estado}")
 
-    # ==========================
-    # RESUMEN CADA 15 MIN
-    # ==========================
-    if time.time() - ULTIMO_RESUMEN >= 900:
+    # ============================
+    # RESUMEN TELEGRAM
+    # ============================
+    now = datetime.now().strftime("%H:%M:%S")
 
-        fecha = datetime.now().strftime("%H:%M:%S")
+    mensaje = f"""📊 RESUMEN BUYBOX
 
-        resumen = f"""📊 RESUMEN BUYBOX | {fecha}
+🕒 {now}
 
-🟢 GANANDO: {ganando}
-🔴 PERDIDO: {perdido}
+🟢 Ganando: {ganando}
+🔴 Perdidos: {perdiendo}
 
-""" + "\n".join(resumen_lineas)
+------------------------
+"""
 
-        enviar_telegram(resumen)
+    for r in resumen:
+        mensaje += r + "\n"
 
-        ULTIMO_RESUMEN = time.time()
+    enviar_telegram(mensaje)
 
-    # LOG MINIMO
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] OK | 🟢{ganando} 🔴{perdido}")
+    print(f"[{now}] OK | 🟢{ganando} 🔴{perdiendo}")
 
-# ==============================
+# ================================
+# KEEP ALIVE (RAILWAY)
+# ================================
+PORT = int(os.getenv("PORT", "8080"))
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, format, *args):
+        return
+
+def iniciar_servidor():
+    server = HTTPServer(("0.0.0.0", PORT), Handler)
+    print(f"🌐 Healthcheck activo en puerto {PORT}")
+    server.serve_forever()
+
+# ================================
 # MAIN
-# ==============================
+# ================================
 if __name__ == "__main__":
     print("🔥 Monitor BuyBox PRO iniciado")
 
+    # levantar servidor para que Railway no mate el proceso
     threading.Thread(target=iniciar_servidor, daemon=True).start()
+
+    enviar_telegram("🚀 Monitor BuyBox iniciado correctamente")
 
     while True:
         monitorear()
+        print("⏳ Esperando 120 segundos...\n")
         time.sleep(120)
