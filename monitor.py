@@ -182,15 +182,16 @@ def monitorear():
     now_str = now_cdmx.strftime("%H:%M:%S")
     fecha_hora = now_cdmx.strftime("%Y-%m-%d %H:%M:%S")
 
-    with open("skus.csv", newline="", encoding="utf-8") as f:
+    with open("skus.csv", newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
+        reader.fieldnames = [campo.strip().lower() for campo in reader.fieldnames]
 
         for row in reader:
-            sku = row["sku"]
-            url = row["url"]
-            tu_seller = row["tu_nombre_seller"]
-            producto = row["nombre_producto"]
-            sku_patish = row["sku_patish"]
+            sku = row["sku"].strip()
+            url = row["url"].strip()
+            tu_seller = row["tu_nombre_seller"].strip()
+            producto = row["nombre_producto"].strip()
+            sku_patish = row["sku_patish"].strip()
 
             html = obtener_html(url)
             seller, price = extraer_buybox(html)
@@ -209,7 +210,6 @@ def monitorear():
             precio_anterior = ULTIMO_PRECIO.get(sku)
             seller_anterior = ULTIMO_SELLER.get(sku)
 
-            # Guardar solo cambios importantes
             tipo_cambio = []
 
             if estado_anterior is None:
@@ -237,7 +237,6 @@ def monitorear():
                     url=url
                 )
 
-            # Alerta inmediata solo si cambias de GANANDO a PERDIDO
             if estado_anterior == "GANANDO" and estado == "PERDIDO":
                 enviar_alerta_perdida(producto, sku, sku_patish, seller, price, url)
 
@@ -245,7 +244,7 @@ def monitorear():
             ULTIMO_PRECIO[sku] = price
             ULTIMO_SELLER[sku] = seller
 
-    # Resumen cada 15 min = 900 s
+    # Resumen cada 15 min
     if time.time() - ULTIMO_RESUMEN >= 900:
         mensaje = f"""📊 RESUMEN BUYBOX
 
