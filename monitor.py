@@ -181,4 +181,4 @@ if __name__ == "__main__":
     while True:
         monitorear()
         print("⏳ Esperando 120 segundos...\n")
-        time.sleep(10)
+        time.sleep(180)
