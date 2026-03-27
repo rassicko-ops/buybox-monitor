@@ -17,18 +17,23 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
 
-ULTIMO_ESTADO = {}
-ULTIMO_RESUMEN = 0
-
-# Zona horaria CDMX
 CDMX_TZ = timezone(timedelta(hours=-6))
+
+ULTIMO_ESTADO = {}
+ULTIMO_PRECIO = {}
+ULTIMO_SELLER = {}
+
+ULTIMO_RESUMEN = 0
+ULTIMA_FECHA_CSV = None
+
+CSV_FILE = "historico_buybox.csv"
 
 # ================================
 # TELEGRAM
 # ================================
 def enviar_telegram(mensaje):
     if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("⚠️ Telegram no configurado")
+        print("⚠️ Falta TELEGRAM_TOKEN o CHAT_ID")
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -36,43 +41,35 @@ def enviar_telegram(mensaje):
     try:
         requests.post(
             url,
-            json={
-                "chat_id": CHAT_ID,
-                "text": mensaje
-            },
-            timeout=10
+            json={"chat_id": CHAT_ID, "text": mensaje},
+            timeout=15
         )
     except Exception as e:
         print(f"Error Telegram: {e}")
 
-# ================================
-# HTML
-# ================================
-def obtener_html(url):
+
+def enviar_csv_telegram():
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("⚠️ Falta TELEGRAM_TOKEN o CHAT_ID")
+        return
+
+    if not os.path.exists(CSV_FILE):
+        print("⚠️ No existe CSV para enviar")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+
     try:
-        r = requests.get(url, headers=HEADERS, timeout=20)
-        return r.text
+        with open(CSV_FILE, "rb") as f:
+            requests.post(
+                url,
+                data={"chat_id": CHAT_ID},
+                files={"document": f},
+                timeout=30
+            )
+        print("📎 CSV enviado por Telegram")
     except Exception as e:
-        print(f"Error HTML: {e}")
-        return None
-
-# ================================
-# EXTRAER BUYBOX
-# ================================
-def extraer_buybox(html):
-    if not html:
-        return None, None
-
-    patron = r'"bestOffer":\{.*?"salePrice":"?(\d+(?:\.\d+)?)"?.*?"sellerName":"(.*?)".*?\}'
-    match = re.search(patron, html, re.DOTALL)
-
-    if not match:
-        return None, None
-
-    price = match.group(1)
-    seller = match.group(2)
-
-    return seller, price
+        print(f"Error enviando CSV: {e}")
 
 # ================================
 # HEALTHCHECK RAILWAY
@@ -94,13 +91,96 @@ def iniciar_servidor():
     server.serve_forever()
 
 # ================================
-# RESUMEN / MONITOREO
+# HTML / BUYBOX
+# ================================
+def obtener_html(url):
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=20)
+        return r.text
+    except Exception as e:
+        print(f"Error HTML: {e}")
+        return None
+
+
+def extraer_buybox(html):
+    if not html:
+        return None, None
+
+    patron = r'"bestOffer":\{.*?"salePrice":"?(\d+(?:\.\d+)?)"?.*?"sellerName":"(.*?)".*?\}'
+    match = re.search(patron, html, re.DOTALL)
+
+    if not match:
+        return None, None
+
+    price = match.group(1)
+    seller = match.group(2)
+
+    return seller, price
+
+# ================================
+# CSV HISTÓRICO
+# ================================
+def inicializar_csv():
+    if not os.path.exists(CSV_FILE):
+        with open(CSV_FILE, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "fecha_hora",
+                "sku_liverpool",
+                "sku_patish",
+                "producto",
+                "seller_ganador",
+                "precio",
+                "estado",
+                "tipo_cambio",
+                "url"
+            ])
+        print("📝 CSV histórico inicializado")
+
+
+def guardar_evento_csv(fecha_hora, sku, sku_patish, producto, seller, price, estado, tipo_cambio, url):
+    with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            fecha_hora,
+            sku,
+            sku_patish,
+            producto,
+            seller,
+            price,
+            estado,
+            tipo_cambio,
+            url
+        ])
+
+# ================================
+# ALERTA DE PÉRDIDA
+# ================================
+def enviar_alerta_perdida(producto, sku, sku_patish, seller, price, url):
+    mensaje = f"""🚨 PERDISTE BUYBOX
+
+Producto: {producto}
+SKU Liverpool: {sku}
+SKU PATISH: {sku_patish}
+Seller: {seller}
+Precio: ${price}
+
+{url}
+"""
+    enviar_telegram(mensaje)
+
+# ================================
+# MONITOREO
 # ================================
 def monitorear():
-    global ULTIMO_ESTADO, ULTIMO_RESUMEN
+    global ULTIMO_RESUMEN, ULTIMA_FECHA_CSV
 
     ganando = []
     perdiendo = []
+
+    now_cdmx = datetime.now(CDMX_TZ)
+    now_str = now_cdmx.strftime("%H:%M:%S")
+    fecha_hora = now_cdmx.strftime("%Y-%m-%d %H:%M:%S")
 
     with open("skus.csv", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -115,39 +195,57 @@ def monitorear():
             html = obtener_html(url)
             seller, price = extraer_buybox(html)
 
-            if not seller:
+            if not seller or not price:
                 continue
 
             if seller.lower() == tu_seller.lower():
                 estado = "GANANDO"
-                ganando.append(f"• {producto[:32]} → ${price}")
+                ganando.append(f"• {producto[:30]} → ${price}")
             else:
                 estado = "PERDIDO"
-                perdiendo.append(f"• {producto[:28]} → {seller} → ${price}")
+                perdiendo.append(f"• {producto[:24]} → {seller} → ${price}")
 
             estado_anterior = ULTIMO_ESTADO.get(sku)
+            precio_anterior = ULTIMO_PRECIO.get(sku)
+            seller_anterior = ULTIMO_SELLER.get(sku)
 
-            # ALERTA inmediata solo si cambias de GANANDO a PERDIDO
+            # Guardar solo cambios importantes
+            tipo_cambio = []
+
+            if estado_anterior is None:
+                tipo_cambio.append("INICIAL")
+
+            if estado_anterior is not None and estado != estado_anterior:
+                tipo_cambio.append("CAMBIO_ESTADO")
+
+            if precio_anterior is not None and str(price) != str(precio_anterior):
+                tipo_cambio.append("CAMBIO_PRECIO")
+
+            if seller_anterior is not None and seller != seller_anterior:
+                tipo_cambio.append("CAMBIO_SELLER")
+
+            if tipo_cambio:
+                guardar_evento_csv(
+                    fecha_hora=fecha_hora,
+                    sku=sku,
+                    sku_patish=sku_patish,
+                    producto=producto,
+                    seller=seller,
+                    price=price,
+                    estado=estado,
+                    tipo_cambio=" | ".join(tipo_cambio),
+                    url=url
+                )
+
+            # Alerta inmediata solo si cambias de GANANDO a PERDIDO
             if estado_anterior == "GANANDO" and estado == "PERDIDO":
-                alerta = f"""🚨 PERDISTE BUYBOX
-
-Producto: {producto}
-SKU Liverpool: {sku}
-SKU PATISH: {sku_patish}
-Seller: {seller}
-Precio: ${price}
-
-{url}
-"""
-                enviar_telegram(alerta)
+                enviar_alerta_perdida(producto, sku, sku_patish, seller, price, url)
 
             ULTIMO_ESTADO[sku] = estado
+            ULTIMO_PRECIO[sku] = price
+            ULTIMO_SELLER[sku] = seller
 
-    # Hora local CDMX
-    now_cdmx = datetime.now(CDMX_TZ)
-    now_str = now_cdmx.strftime("%H:%M:%S")
-
-    # resumen solo cada 15 minutos = 900 segundos
+    # Resumen cada 15 min = 900 s
     if time.time() - ULTIMO_RESUMEN >= 900:
         mensaje = f"""📊 RESUMEN BUYBOX
 
@@ -166,6 +264,17 @@ Precio: ${price}
         enviar_telegram(mensaje)
         ULTIMO_RESUMEN = time.time()
 
+    # CSV diario a las 10:00 AM CDMX
+    hora_actual = now_cdmx.hour
+    minuto_actual = now_cdmx.minute
+    fecha_actual = now_cdmx.strftime("%Y-%m-%d")
+
+    if hora_actual == 10 and minuto_actual <= 2:
+        if ULTIMA_FECHA_CSV != fecha_actual:
+            print("📎 Enviando CSV diario...")
+            enviar_csv_telegram()
+            ULTIMA_FECHA_CSV = fecha_actual
+
     print(f"[{now_str}] OK | 🟢{len(ganando)} 🔴{len(perdiendo)}")
 
 # ================================
@@ -173,12 +282,13 @@ Precio: ${price}
 # ================================
 if __name__ == "__main__":
     print("🔥 Monitor BuyBox PRO iniciado")
+    inicializar_csv()
+
     threading.Thread(target=iniciar_servidor, daemon=True).start()
 
-    # mensaje de arranque solo una vez
     enviar_telegram("🚀 Monitor BuyBox iniciado correctamente")
 
     while True:
         monitorear()
         print("⏳ Esperando 120 segundos...\n")
-        time.sleep(180)
+        time.sleep(120)
