@@ -360,6 +360,23 @@ def escapar(valor):
     return html.escape(str(valor), quote=False)
 
 
+def clasificar_estado_oferta(estado_oferta, motivo, cantidad):
+    motivo_texto = limpiar_texto(motivo).lower()
+    estado_texto = limpiar_texto(estado_oferta).upper()
+    try:
+        cantidad_num = int(cantidad)
+    except (TypeError, ValueError):
+        cantidad_num = 0
+
+    if "restricción de oferta" in motivo_texto:
+        return "BLOQUEADA"
+    if cantidad_num <= 0:
+        return "INACTIVA_STOCK"
+    if estado_texto == "ACTIVA":
+        return "ACTIVA"
+    return "INACTIVA_STOCK"
+
+
 def guardar_catalogo_persistido(items):
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(CATALOGO_FILE, "w", encoding="utf-8") as archivo:
@@ -373,6 +390,12 @@ def cargar_catalogo_persistido():
     try:
         with open(CATALOGO_FILE, encoding="utf-8") as archivo:
             CATALOGO = json.load(archivo)
+        for item in CATALOGO:
+            item["estado_oferta"] = clasificar_estado_oferta(
+                item.get("estado_oferta", ""),
+                item.get("motivo", ""),
+                item.get("cantidad", 0),
+            )
         print(f"📦 {len(CATALOGO)} items cargados desde {CATALOGO_FILE}")
         return True
     except Exception as exc:
@@ -405,12 +428,7 @@ def procesar_excel_catalogo(excel_bytes):
         if sku_oferta.startswith("Eliminado_") or not sku_oferta or not sku_producto:
             continue
 
-        if "restricción de oferta" in motivo.lower():
-            estado_inicial = "BLOQUEADA"
-        elif estado_oferta == "ACTIVA":
-            estado_inicial = "ACTIVA"
-        else:
-            estado_inicial = "INACTIVA_STOCK"
+        estado_inicial = clasificar_estado_oferta(estado_oferta, motivo, cantidad)
 
         vgc_limpio = re.sub(r"[^0-9]", "", vgc)
         product_id = vgc_limpio if len(vgc_limpio) >= 8 else sku_producto
