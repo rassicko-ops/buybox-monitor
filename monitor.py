@@ -171,12 +171,12 @@ HTML_PANEL = """<!DOCTYPE html>
     <table>
       <thead>
         <tr>
-          <th>Producto</th><th>Color</th><th>Tamano</th><th>SKU PATISH</th><th>SKU Liverpool</th>
+          <th>Producto</th><th>Color</th><th>Tamano</th><th>SKU PATISH</th><th>SKU Liverpool</th><th>VGC</th>
           <th>Estado</th><th>Seller BuyBox</th><th>Precio BuyBox</th><th>Tu precio</th><th>Diferencia</th><th>URL</th>
         </tr>
       </thead>
       <tbody id="tbody-estado">
-        <tr><td colspan="11" style="color:var(--muted);text-align:center;padding:32px">Cargando...</td></tr>
+        <tr><td colspan="12" style="color:var(--muted);text-align:center;padding:32px">Cargando...</td></tr>
       </tbody>
     </table>
   </div>
@@ -254,13 +254,14 @@ function renderTabla(){
     items=items.filter(i=>{
       const skuLiverpool=String(i.sku_liverpool||'').toLowerCase();
       const skuPatish=String(i.sku_patish||'').toLowerCase();
-      return skuLiverpool.includes(busquedaActual) || skuPatish.includes(busquedaActual);
+      const vgc=String(i.vgc||'').toLowerCase();
+      return skuLiverpool.includes(busquedaActual) || skuPatish.includes(busquedaActual) || vgc.includes(busquedaActual);
     });
   }
   document.getElementById('count-visible').textContent=items.length;
   const tbody=document.getElementById('tbody-estado');
   if(!items.length){
-    tbody.innerHTML='<tr><td colspan="11" style="color:var(--muted);text-align:center;padding:28px">Sin datos para este filtro</td></tr>';
+    tbody.innerHTML='<tr><td colspan="12" style="color:var(--muted);text-align:center;padding:28px">Sin datos para este filtro</td></tr>';
     return;
   }
   tbody.innerHTML=items.map(p=>{
@@ -276,6 +277,7 @@ function renderTabla(){
       <td>${escapeHtml(p.color||'-')}</td><td>${escapeHtml(p.size||'-')}</td>
       <td style="font-size:.65rem">${escapeHtml(p.sku_patish)}</td>
       <td style="font-size:.65rem">${escapeHtml(p.sku_liverpool)}</td>
+      <td style="font-size:.65rem">${escapeHtml(p.vgc||'-')}</td>
       <td><span class="badge ${bc}">${escapeHtml(bt)}</span></td>
       <td>${escapeHtml(p.seller_buybox||'-')}</td>
       <td>${p.precio_buybox?'$'+escapeHtml(String(p.precio_buybox)):'-'}</td>
@@ -447,6 +449,7 @@ def construir_items_estado():
             {
                 "sku_patish": sku,
                 "sku_liverpool": variante["sku_liverpool"],
+                "vgc": variante.get("vgc", ""),
                 "producto": variante["producto"],
                 "color": variante.get("color", ""),
                 "size": variante.get("size", ""),
@@ -471,6 +474,7 @@ def filtrar_items_estado(items, estado, busqueda):
             for item in filtrados
             if termino in str(item.get("sku_liverpool", "")).lower()
             or termino in str(item.get("sku_patish", "")).lower()
+            or termino in str(item.get("vgc", "")).lower()
         ]
     return filtrados
 
@@ -564,6 +568,7 @@ def api_exportar():
         "estado",
         "sku_patish",
         "sku_liverpool",
+        "vgc",
         "producto",
         "color",
         "size",
@@ -578,6 +583,7 @@ def api_exportar():
             "estado": "Estado",
             "sku_patish": "SKU PATISH",
             "sku_liverpool": "SKU Liverpool",
+            "vgc": "VGC",
             "producto": "Producto",
             "color": "Color",
             "size": "Tamano",
