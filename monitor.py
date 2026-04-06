@@ -37,6 +37,8 @@ CDMX_TZ = timezone(timedelta(hours=-6))
 ULTIMO_ESTADO = {}
 ULTIMO_PRECIO = {}
 ULTIMO_SELLER = {}
+ULTIMO_PRECIO_PATISH = {}
+ULTIMO_STOCK_PATISH = {}
 
 CATALOGO = []
 
@@ -68,11 +70,11 @@ HTML_PANEL = """<!DOCTYPE html>
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.2}}
   header h1{font-family:'Syne',sans-serif;font-weight:800;font-size:1.1rem;letter-spacing:.06em;color:#fff}
   header .tag{margin-left:auto;font-size:.65rem;color:var(--muted);border:1px solid var(--border);padding:3px 10px;border-radius:3px}
-  .stats{display:flex;gap:1px;background:var(--border);border-bottom:1px solid var(--border)}
-  .stat{flex:1;background:var(--surface);padding:16px 20px;text-align:center}
+  .stats{display:flex;gap:1px;background:var(--border);border-bottom:1px solid var(--border);flex-wrap:wrap}
+  .stat{flex:1;background:var(--surface);padding:16px 20px;text-align:center;min-width:180px}
   .stat .num{font-family:'Syne',sans-serif;font-size:2rem;font-weight:800;line-height:1}
   .stat .lbl{font-size:.6rem;color:var(--muted);margin-top:5px;text-transform:uppercase;letter-spacing:.1em}
-  .stat.g .num{color:var(--accent)}.stat.r .num{color:var(--red)}.stat.y .num{color:var(--yellow)}.stat.o .num{color:var(--orange)}.stat.gr .num{color:var(--muted)}
+  .stat.g .num{color:var(--accent)}.stat.r .num{color:var(--red)}.stat.y .num{color:var(--yellow)}.stat.o .num{color:var(--orange)}.stat.gr .num{color:var(--muted)}.stat.w .num{color:#fff}
   main{padding:22px 32px;max-width:1500px;margin:0 auto}
   .sec{font-family:'Syne',sans-serif;font-size:.7rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:28px 0 10px;display:flex;align-items:center;gap:12px}
   .sec-count{background:var(--border);color:var(--muted);padding:2px 8px;border-radius:3px;font-size:.65rem}
@@ -91,6 +93,8 @@ HTML_PANEL = """<!DOCTYPE html>
   .search-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:0 0 14px}
   .search-input{min-width:280px;flex:1;max-width:460px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:9px 12px;font-family:'Space Mono',monospace;font-size:.72rem}
   .search-input:focus{outline:none;border-color:var(--accent)}
+  .sort-select{background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:9px 12px;font-family:'Space Mono',monospace;font-size:.72rem;min-width:220px}
+  .sort-select:focus{outline:none;border-color:var(--accent)}
   .search-help{font-size:.65rem;color:var(--muted)}
   .download-btn{display:inline-flex;align-items:center;justify-content:center;text-decoration:none}
   .tw{overflow-x:auto}
@@ -101,6 +105,7 @@ HTML_PANEL = """<!DOCTYPE html>
   .badge{display:inline-block;padding:2px 7px;border-radius:3px;font-size:.6rem;font-weight:700;letter-spacing:.06em;white-space:nowrap}
   .bw{background:rgba(0,255,136,.1);color:var(--accent);border:1px solid rgba(0,255,136,.2)}
   .bl{background:rgba(255,68,102,.1);color:var(--red);border:1px solid rgba(255,68,102,.2)}
+  .by{background:rgba(255,187,0,.1);color:var(--yellow);border:1px solid rgba(255,187,0,.2)}
   .bo{background:rgba(255,136,0,.1);color:var(--orange);border:1px solid rgba(255,136,0,.2)}
   .bn{background:rgba(100,100,100,.1);color:var(--muted);border:1px solid var(--border)}
   a.lnk{color:var(--muted);text-decoration:none;font-size:.62rem} a.lnk:hover{color:var(--accent)}
@@ -124,9 +129,10 @@ HTML_PANEL = """<!DOCTYPE html>
 <div class="stats">
   <div class="stat g"><div class="num" id="sg">-</div><div class="lbl">Ganando BuyBox</div></div>
   <div class="stat r"><div class="num" id="sp">-</div><div class="lbl">Perdiendo</div></div>
+  <div class="stat y"><div class="num" id="snp">-</div><div class="lbl">No prendida</div></div>
   <div class="stat o"><div class="num" id="sb">-</div><div class="lbl">Bloqueadas</div></div>
   <div class="stat gr"><div class="num" id="ss">-</div><div class="lbl">Sin stock</div></div>
-  <div class="stat y"><div class="num" id="st">-</div><div class="lbl">Total variantes</div></div>
+  <div class="stat w"><div class="num" id="st">-</div><div class="lbl">Total variantes</div></div>
 </div>
 
 <main>
@@ -149,6 +155,7 @@ HTML_PANEL = """<!DOCTYPE html>
     <button class="filter-btn active" onclick="setFiltro('TODOS',this)">Todos</button>
     <button class="filter-btn" onclick="setFiltro('GANANDO',this)">Ganando</button>
     <button class="filter-btn" onclick="setFiltro('PERDIDO',this)">Perdiendo</button>
+    <button class="filter-btn" onclick="setFiltro('NO_PRENDIDA',this)">No prendida</button>
     <button class="filter-btn" onclick="setFiltro('BLOQUEADA',this)">Bloqueadas</button>
     <button class="filter-btn" onclick="setFiltro('INACTIVA_STOCK',this)">Sin stock</button>
     <button class="filter-btn" onclick="setFiltro('SIN_DATOS',this)">Sin datos</button>
@@ -158,9 +165,17 @@ HTML_PANEL = """<!DOCTYPE html>
       id="sku-search"
       class="search-input"
       type="search"
-      placeholder="Buscar por SKU Liverpool o SKU PATISH"
+      placeholder="Buscar por nombre, SKU Liverpool, SKU PATISH o VGC"
       oninput="setBusqueda(this.value)"
     >
+    <select id="sort-select" class="sort-select" onchange="setOrden(this.value)">
+      <option value="producto_asc">Orden: Nombre A-Z</option>
+      <option value="producto_desc">Orden: Nombre Z-A</option>
+      <option value="stock_desc">Orden: Mayor stock</option>
+      <option value="stock_asc">Orden: Menor stock</option>
+      <option value="diferencia_asc">Orden: Menor diferencia</option>
+      <option value="diferencia_desc">Orden: Mayor diferencia</option>
+    </select>
     <div class="search-help" id="search-status">Sin busqueda activa</div>
     <a id="download-link" class="btn bp download-btn" href="/api/exportar?estado=TODOS" target="_blank" rel="noreferrer">
       Descargar Excel de Todos
@@ -172,11 +187,11 @@ HTML_PANEL = """<!DOCTYPE html>
       <thead>
         <tr>
           <th>Producto</th><th>Color</th><th>Tamano</th><th>SKU PATISH</th><th>SKU Liverpool</th><th>VGC</th>
-          <th>Estado</th><th>Seller BuyBox</th><th>Precio BuyBox</th><th>Tu precio</th><th>Diferencia</th><th>URL</th>
+          <th>Estado</th><th>Seller BuyBox</th><th>Precio Liverpool</th><th>Tu precio</th><th>Stock tuyo</th><th>Diferencia</th><th>URL</th>
         </tr>
       </thead>
       <tbody id="tbody-estado">
-        <tr><td colspan="12" style="color:var(--muted);text-align:center;padding:32px">Cargando...</td></tr>
+        <tr><td colspan="13" style="color:var(--muted);text-align:center;padding:32px">Cargando...</td></tr>
       </tbody>
     </table>
   </div>
@@ -185,7 +200,7 @@ HTML_PANEL = """<!DOCTYPE html>
 </main>
 
 <script>
-let filtroActual='TODOS', busquedaActual='', todosItems=[];
+let filtroActual='TODOS', busquedaActual='', ordenActual='producto_asc', todosItems=[];
 
 document.getElementById('excel-input').addEventListener('change',function(){
   document.getElementById('file-name-lbl').textContent=this.files[0]?.name||'Ningun archivo';
@@ -227,6 +242,12 @@ function setBusqueda(value){
   renderTabla();
 }
 
+function setOrden(value){
+  ordenActual=value||'producto_asc';
+  actualizarDescarga();
+  renderTabla();
+}
+
 function actualizarDescarga(){
   const link=document.getElementById('download-link');
   const params=new URLSearchParams();
@@ -234,6 +255,7 @@ function actualizarDescarga(){
   if(busquedaActual){
     params.set('q',busquedaActual);
   }
+  params.set('sort',ordenActual);
   link.href='/api/exportar?'+params.toString();
   const titulo=filtroActual==='TODOS'?'Todos':filtroActual.replaceAll('_',' ');
   link.textContent='Descargar Excel de '+titulo;
@@ -248,30 +270,99 @@ function escapeHtml(value){
     .replaceAll("'","&#39;");
 }
 
+function numeroSeguro(value){
+  const n=parseFloat(value);
+  return Number.isFinite(n)?n:null;
+}
+
+function diferenciaNumero(item){
+  const precioLiverpool=numeroSeguro(item.precio_liverpool);
+  const precioTuyo=numeroSeguro(item.precio_tuyo);
+  if(precioLiverpool===null || precioTuyo===null){
+    return null;
+  }
+  return precioLiverpool-precioTuyo;
+}
+
+function ordenarItems(items){
+  const copia=[...items];
+  if(ordenActual==='producto_desc'){
+    return copia.sort((a,b)=>String(b.producto||'').localeCompare(String(a.producto||''),'es',{sensitivity:'base'}));
+  }
+  if(ordenActual==='stock_desc'){
+    return copia.sort((a,b)=>{
+      const av=(a.stock_tuyo===0 || a.stock_tuyo)?Number(a.stock_tuyo):null;
+      const bv=(b.stock_tuyo===0 || b.stock_tuyo)?Number(b.stock_tuyo):null;
+      if(av===null && bv===null) return String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'});
+      if(av===null) return 1;
+      if(bv===null) return -1;
+      if(av!==bv) return bv-av;
+      return String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'});
+    });
+  }
+  if(ordenActual==='stock_asc'){
+    return copia.sort((a,b)=>{
+      const av=(a.stock_tuyo===0 || a.stock_tuyo)?Number(a.stock_tuyo):null;
+      const bv=(b.stock_tuyo===0 || b.stock_tuyo)?Number(b.stock_tuyo):null;
+      if(av===null && bv===null) return String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'});
+      if(av===null) return 1;
+      if(bv===null) return -1;
+      if(av!==bv) return av-bv;
+      return String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'});
+    });
+  }
+  if(ordenActual==='diferencia_desc'){
+    return copia.sort((a,b)=>{
+      const av=diferenciaNumero(a);
+      const bv=diferenciaNumero(b);
+      if(av===null && bv===null) return String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'});
+      if(av===null) return 1;
+      if(bv===null) return -1;
+      if(av!==bv) return bv-av;
+      return String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'});
+    });
+  }
+  if(ordenActual==='diferencia_asc'){
+    return copia.sort((a,b)=>{
+      const av=diferenciaNumero(a);
+      const bv=diferenciaNumero(b);
+      if(av===null && bv===null) return String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'});
+      if(av===null) return 1;
+      if(bv===null) return -1;
+      if(av!==bv) return av-bv;
+      return String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'});
+    });
+  }
+  return copia.sort((a,b)=>String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'}));
+}
+
 function renderTabla(){
   let items=filtroActual==='TODOS'?todosItems:todosItems.filter(i=>i.estado===filtroActual);
   if(busquedaActual){
     items=items.filter(i=>{
+      const producto=String(i.producto||'').toLowerCase();
       const skuLiverpool=String(i.sku_liverpool||'').toLowerCase();
       const skuPatish=String(i.sku_patish||'').toLowerCase();
       const vgc=String(i.vgc||'').toLowerCase();
-      return skuLiverpool.includes(busquedaActual) || skuPatish.includes(busquedaActual) || vgc.includes(busquedaActual);
+      return producto.includes(busquedaActual) || skuLiverpool.includes(busquedaActual) || skuPatish.includes(busquedaActual) || vgc.includes(busquedaActual);
     });
   }
+  items=ordenarItems(items);
   document.getElementById('count-visible').textContent=items.length;
   const tbody=document.getElementById('tbody-estado');
   if(!items.length){
-    tbody.innerHTML='<tr><td colspan="12" style="color:var(--muted);text-align:center;padding:28px">Sin datos para este filtro</td></tr>';
+    tbody.innerHTML='<tr><td colspan="13" style="color:var(--muted);text-align:center;padding:28px">Sin datos para este filtro</td></tr>';
     return;
   }
   tbody.innerHTML=items.map(p=>{
-    const bc=p.estado==='GANANDO'?'bw':p.estado==='PERDIDO'?'bl':p.estado==='BLOQUEADA'?'bo':'bn';
-    const bt=p.estado==='GANANDO'?'GANANDO':p.estado==='PERDIDO'?'PERDIDO':p.estado==='BLOQUEADA'?'BLOQUEADA':p.estado==='SIN_DATOS'?'SIN DATOS':'SIN STOCK';
+    const bc=p.estado==='GANANDO'?'bw':p.estado==='PERDIDO'?'bl':p.estado==='NO_PRENDIDA'?'by':p.estado==='BLOQUEADA'?'bo':'bn';
+    const bt=p.estado==='GANANDO'?'GANANDO':p.estado==='PERDIDO'?'PERDIDO':p.estado==='NO_PRENDIDA'?'NO PRENDIDA':p.estado==='BLOQUEADA'?'BLOQUEADA':p.estado==='SIN_DATOS'?'SIN DATOS':'SIN STOCK';
     let diff='';
-    if(p.precio_buybox&&p.precio_patish){
-      const d=parseFloat(p.precio_buybox)-parseFloat(p.precio_patish);
+    if(p.precio_liverpool&&p.precio_tuyo){
+      const d=parseFloat(p.precio_liverpool)-parseFloat(p.precio_tuyo);
       if(!isNaN(d))diff=d<0?`<span class="diff-neg">-$${Math.abs(d).toFixed(2)}</span>`:d>0?`<span class="diff-pos">+$${d.toFixed(2)}</span>`:'<span style="color:var(--muted)">igual</span>';
     }
+    const stockTexto=(p.stock_tuyo===0 || p.stock_tuyo)?escapeHtml(String(p.stock_tuyo)):'-';
     return `<tr>
       <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(p.producto)}">${escapeHtml(p.producto)}</td>
       <td>${escapeHtml(p.color||'-')}</td><td>${escapeHtml(p.size||'-')}</td>
@@ -280,8 +371,9 @@ function renderTabla(){
       <td style="font-size:.65rem">${escapeHtml(p.vgc||'-')}</td>
       <td><span class="badge ${bc}">${escapeHtml(bt)}</span></td>
       <td>${escapeHtml(p.seller_buybox||'-')}</td>
-      <td>${p.precio_buybox?'$'+escapeHtml(String(p.precio_buybox)):'-'}</td>
-      <td>${p.precio_patish?'$'+escapeHtml(String(p.precio_patish)):'-'}</td>
+      <td>${p.precio_liverpool?'$'+escapeHtml(String(p.precio_liverpool)):'-'}</td>
+      <td>${p.precio_tuyo?'$'+escapeHtml(String(p.precio_tuyo)):'-'}</td>
+      <td>${stockTexto}</td>
       <td>${diff||'-'}</td>
       <td>${p.url?`<a class="lnk" href="${escapeHtml(p.url)}" target="_blank" rel="noreferrer">ver</a>`:'-'}</td>
     </tr>`;
@@ -293,6 +385,7 @@ async function cargarEstado(){
   const d=await resp.json();
   document.getElementById('sg').textContent=d.ganando;
   document.getElementById('sp').textContent=d.perdidos;
+  document.getElementById('snp').textContent=d.no_prendida;
   document.getElementById('sb').textContent=d.bloqueadas;
   document.getElementById('ss').textContent=d.sin_stock;
   document.getElementById('st').textContent=d.total;
@@ -344,6 +437,25 @@ def normalizar_precio(valor):
         return None
 
 
+def normalizar_entero(valor):
+    if valor is None or pd.isna(valor):
+        return None
+    if isinstance(valor, bool):
+        return int(valor)
+    if isinstance(valor, int):
+        return valor
+    if isinstance(valor, float):
+        return int(valor)
+    texto = str(valor).strip()
+    if not texto or texto.lower() == "nan":
+        return None
+    texto = texto.replace(",", "")
+    try:
+        return int(float(texto))
+    except ValueError:
+        return None
+
+
 def formatear_precio(valor):
     if valor in (None, ""):
         return ""
@@ -358,6 +470,43 @@ def formatear_precio(valor):
 
 def escapar(valor):
     return html.escape(str(valor), quote=False)
+
+
+def es_seller_mio(seller, seller_id):
+    seller_texto = limpiar_texto(seller).lower()
+    seller_id_texto = normalizar_identificador(seller_id)
+    return seller_texto == MY_SELLER.lower() or (seller_id_texto and seller_id_texto == MY_SELLER_ID)
+
+
+def obtener_precio_actual(datos):
+    if not isinstance(datos, dict):
+        return ""
+    for llave in ("promoPrice", "salePrice", "listPrice", "sortPrice"):
+        precio = formatear_precio(datos.get(llave))
+        if precio:
+            return precio
+    return ""
+
+
+def obtener_stock_actual(datos):
+    if not isinstance(datos, dict):
+        return None
+    for llave in ("stock", "availableQuantity", "quantity"):
+        stock = normalizar_entero(datos.get(llave))
+        if stock is not None:
+            return stock
+    return None
+
+
+def resumir_oferta(oferta):
+    if not isinstance(oferta, dict):
+        return {}
+    return {
+        "seller": limpiar_texto(oferta.get("sellerName")),
+        "sellerId": normalizar_identificador(oferta.get("sellerId")),
+        "precio": obtener_precio_actual(oferta),
+        "stock": obtener_stock_actual(oferta),
+    }
 
 
 def clasificar_estado_oferta(estado_oferta, motivo, cantidad):
@@ -463,6 +612,8 @@ def construir_items_estado():
             estado_final = variante["estado_oferta"] if variante["estado_oferta"] != "ACTIVA" else "SIN_DATOS"
         else:
             estado_final = estado_monitor
+        precio_tuyo = ULTIMO_PRECIO_PATISH[sku] if sku in ULTIMO_PRECIO_PATISH else ""
+        stock_tuyo = ULTIMO_STOCK_PATISH[sku] if sku in ULTIMO_STOCK_PATISH else normalizar_entero(variante.get("cantidad"))
         items.append(
             {
                 "sku_patish": sku,
@@ -473,8 +624,9 @@ def construir_items_estado():
                 "size": variante.get("size", ""),
                 "estado": estado_final,
                 "seller_buybox": ULTIMO_SELLER.get(sku, ""),
-                "precio_buybox": ULTIMO_PRECIO.get(sku, ""),
-                "precio_patish": formatear_precio(variante.get("precio_base")),
+                "precio_liverpool": ULTIMO_PRECIO.get(sku, ""),
+                "precio_tuyo": precio_tuyo,
+                "stock_tuyo": stock_tuyo,
                 "url": variante["url"],
             }
         )
@@ -490,11 +642,57 @@ def filtrar_items_estado(items, estado, busqueda):
         filtrados = [
             item
             for item in filtrados
-            if termino in str(item.get("sku_liverpool", "")).lower()
+            if termino in str(item.get("producto", "")).lower()
+            or termino in str(item.get("sku_liverpool", "")).lower()
             or termino in str(item.get("sku_patish", "")).lower()
             or termino in str(item.get("vgc", "")).lower()
         ]
     return filtrados
+
+
+def calcular_diferencia_item(item):
+    precio_liverpool = normalizar_precio(item.get("precio_liverpool"))
+    precio_tuyo = normalizar_precio(item.get("precio_tuyo"))
+    if precio_liverpool is None or precio_tuyo is None:
+        return None
+    return precio_liverpool - precio_tuyo
+
+
+def ordenar_items_estado(items, orden):
+    orden_normalizado = limpiar_texto(orden).lower() or "producto_asc"
+
+    if orden_normalizado == "producto_desc":
+        return sorted(
+            items,
+            key=lambda item: str(item.get("producto", "")).lower(),
+            reverse=True,
+        )
+
+    if orden_normalizado in {"stock_desc", "stock_asc"}:
+        descendente = orden_normalizado.endswith("desc")
+
+        def llave_stock(item):
+            stock = item.get("stock_tuyo")
+            nombre = str(item.get("producto", "")).lower()
+            if stock is None:
+                return (1, 0, nombre)
+            return (0, -stock if descendente else stock, nombre)
+
+        return sorted(items, key=llave_stock)
+
+    if orden_normalizado in {"diferencia_desc", "diferencia_asc"}:
+        descendente = orden_normalizado.endswith("desc")
+
+        def llave_diferencia(item):
+            diferencia = calcular_diferencia_item(item)
+            nombre = str(item.get("producto", "")).lower()
+            if diferencia is None:
+                return (1, 0, nombre)
+            return (0, -diferencia if descendente else diferencia, nombre)
+
+        return sorted(items, key=llave_diferencia)
+
+    return sorted(items, key=lambda item: str(item.get("producto", "")).lower())
 
 
 @app.route("/")
@@ -566,6 +764,7 @@ def api_estado():
         {
             "ganando": sum(1 for item in items if item["estado"] == "GANANDO"),
             "perdidos": sum(1 for item in items if item["estado"] == "PERDIDO"),
+            "no_prendida": sum(1 for item in items if item["estado"] == "NO_PRENDIDA"),
             "bloqueadas": sum(1 for item in items if item["estado"] == "BLOQUEADA"),
             "sin_stock": sum(1 for item in items if item["estado"] == "INACTIVA_STOCK"),
             "total": len(items),
@@ -578,9 +777,11 @@ def api_estado():
 def api_exportar():
     estado = request.args.get("estado", "TODOS").strip().upper() or "TODOS"
     busqueda = request.args.get("q", "").strip()
+    orden = request.args.get("sort", "producto_asc").strip()
 
     items = construir_items_estado()
     filtrados = filtrar_items_estado(items, estado, busqueda)
+    filtrados = ordenar_items_estado(filtrados, orden)
 
     columnas = [
         "estado",
@@ -591,11 +792,17 @@ def api_exportar():
         "color",
         "size",
         "seller_buybox",
-        "precio_buybox",
-        "precio_patish",
+        "precio_liverpool",
+        "precio_tuyo",
+        "stock_tuyo",
         "url",
     ]
     df = pd.DataFrame(filtrados, columns=columnas)
+    if not df.empty:
+        df["diferencia"] = [
+            formatear_precio(calcular_diferencia_item(item)) if calcular_diferencia_item(item) is not None else ""
+            for item in filtrados
+        ]
     df = df.rename(
         columns={
             "estado": "Estado",
@@ -606,8 +813,10 @@ def api_exportar():
             "color": "Color",
             "size": "Tamano",
             "seller_buybox": "Seller BuyBox",
-            "precio_buybox": "Precio BuyBox",
-            "precio_patish": "Tu Precio",
+            "precio_liverpool": "Precio Liverpool",
+            "precio_tuyo": "Tu Precio",
+            "stock_tuyo": "Stock Tuyo",
+            "diferencia": "Diferencia",
             "url": "URL",
         }
     )
@@ -642,6 +851,7 @@ def status():
         {
             "ganando": sum(1 for valor in ULTIMO_ESTADO.values() if valor == "GANANDO"),
             "perdidos": sum(1 for valor in ULTIMO_ESTADO.values() if valor == "PERDIDO"),
+            "no_prendida": sum(1 for valor in ULTIMO_ESTADO.values() if valor == "NO_PRENDIDA"),
             "total": len(CATALOGO),
             "ts": datetime.now(CDMX_TZ).strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -776,6 +986,7 @@ def extraer_variantes(data):
             continue
 
         offers_obj = variante.get("offers", {})
+        prices_obj = variante.get("prices", {})
         offers_arr = []
         best_offer = None
 
@@ -785,30 +996,24 @@ def extraer_variantes(data):
                 offers_arr = []
             best_offer = offers_obj.get("bestOffer")
 
+        ofertas_resumidas = [resumir_oferta(oferta) for oferta in offers_arr if isinstance(oferta, dict)]
+
         ganador = None
         if isinstance(best_offer, dict):
-            ganador = {
-                "seller": limpiar_texto(best_offer.get("sellerName")),
-                "sellerId": normalizar_identificador(best_offer.get("sellerId")),
-                "precio": formatear_precio(best_offer.get("salePrice")),
-            }
-        elif offers_arr:
-            oferta = offers_arr[0]
-            if isinstance(oferta, dict):
-                ganador = {
-                    "seller": limpiar_texto(oferta.get("sellerName")),
-                    "sellerId": normalizar_identificador(oferta.get("sellerId")),
-                    "precio": formatear_precio(oferta.get("salePrice")),
-                }
+            ganador = resumir_oferta(best_offer)
+        elif ofertas_resumidas:
+            ganador = ofertas_resumidas[0]
 
         otros = []
-        for oferta in offers_arr[1:]:
-            if not isinstance(oferta, dict):
+        for oferta in ofertas_resumidas:
+            if not oferta.get("seller"):
+                continue
+            if ganador and oferta.get("seller") == ganador.get("seller") and oferta.get("sellerId") == ganador.get("sellerId"):
                 continue
             otros.append(
                 {
-                    "seller": limpiar_texto(oferta.get("sellerName")),
-                    "precio": formatear_precio(oferta.get("salePrice")),
+                    "seller": oferta.get("seller", ""),
+                    "precio": oferta.get("precio", ""),
                 }
             )
             if len(otros) >= 4:
@@ -821,7 +1026,10 @@ def extraer_variantes(data):
                 "size": limpiar_texto(variante.get("size")),
                 "hasValidOnlineInventory": str(variante.get("hasValidOnlineInventory", "false")).lower(),
                 "sellersCount": variante.get("sellersCount", 0),
+                "precio_liverpool": obtener_precio_actual(prices_obj),
+                "stock_liverpool": obtener_stock_actual(variante.get("inventory", {})),
                 "buybox": ganador,
+                "offers": ofertas_resumidas,
                 "otros_sellers": otros,
             }
         )
@@ -965,6 +1173,7 @@ def generar_estado_actual():
 
     ganando = [item for item in CATALOGO if ULTIMO_ESTADO.get(item["sku_patish"]) == "GANANDO"]
     perdiendo = [item for item in CATALOGO if ULTIMO_ESTADO.get(item["sku_patish"]) == "PERDIDO"]
+    no_prendidas = [item for item in CATALOGO if ULTIMO_ESTADO.get(item["sku_patish"]) == "NO_PRENDIDA"]
     bloqueadas = [item for item in CATALOGO if item["estado_oferta"] == "BLOQUEADA"]
     now_str = datetime.now(CDMX_TZ).strftime("%H:%M:%S")
 
@@ -973,6 +1182,7 @@ def generar_estado_actual():
         "",
         f"🟢 Ganando: {len(ganando)}",
         f"🔴 Perdiendo: {len(perdiendo)}",
+        f"🟡 No prendida: {len(no_prendidas)}",
         f"🟠 Bloqueadas Liverpool: {len(bloqueadas)}",
         f"📦 Total catalogo: {len(CATALOGO)}",
     ]
@@ -991,6 +1201,16 @@ def generar_estado_actual():
         lineas.append("")
         lineas.append("🔴 <b>PERDIENDO</b>")
         for item in perdiendo[:10]:
+            variante = " ".join(parte for parte in [item.get("color", ""), item.get("size", "")] if parte).strip()
+            sufijo = f" {escapar(variante)}" if variante else ""
+            lineas.append(
+                f"• {escapar(item['producto'][:18])}{sufijo} → {escapar(ULTIMO_SELLER.get(item['sku_patish'], '?'))} → ${escapar(ULTIMO_PRECIO.get(item['sku_patish'], '?'))}"
+            )
+
+    if no_prendidas:
+        lineas.append("")
+        lineas.append("🟡 <b>NO PRENDIDA</b>")
+        for item in no_prendidas[:10]:
             variante = " ".join(parte for parte in [item.get("color", ""), item.get("size", "")] if parte).strip()
             sufijo = f" {escapar(variante)}" if variante else ""
             lineas.append(
@@ -1107,6 +1327,8 @@ def limpiar_estado_item(sku, estado):
     ULTIMO_ESTADO[sku] = estado
     ULTIMO_PRECIO[sku] = ""
     ULTIMO_SELLER[sku] = ""
+    ULTIMO_PRECIO_PATISH.pop(sku, None)
+    ULTIMO_STOCK_PATISH.pop(sku, None)
 
 
 def monitorear():
@@ -1114,6 +1336,7 @@ def monitorear():
 
     ganando = []
     perdiendo = []
+    no_prendidas = []
     now_cdmx = datetime.now(CDMX_TZ)
     now_str = now_cdmx.strftime("%H:%M:%S")
     fecha_hora = now_cdmx.strftime("%Y-%m-%d %H:%M:%S")
@@ -1178,6 +1401,8 @@ def monitorear():
                         "sellerId": "",
                         "precio": formatear_precio(price_legacy),
                     },
+                    "precio_liverpool": formatear_precio(price_legacy),
+                    "offers": [],
                     "otros_sellers": [
                         {
                             "seller": alternativo["seller"],
@@ -1189,25 +1414,50 @@ def monitorear():
                 }
 
             buybox = variante_data.get("buybox")
+            offers = [oferta for oferta in variante_data.get("offers", []) if oferta.get("seller")]
             otros = variante_data.get("otros_sellers", [])
+            precio_liverpool = formatear_precio(variante_data.get("precio_liverpool"))
 
             if not buybox or not buybox.get("seller"):
                 limpiar_estado_item(sku_patish, "INACTIVA_STOCK")
                 continue
 
             seller = limpiar_texto(buybox.get("seller"))
-            price = formatear_precio(buybox.get("precio"))
+            price = precio_liverpool or formatear_precio(buybox.get("precio"))
             seller_id = normalizar_identificador(buybox.get("sellerId"))
-            es_mio = seller.lower() == MY_SELLER.lower() or (seller_id and seller_id == MY_SELLER_ID)
-            nuevo_estado = "GANANDO" if es_mio else "PERDIDO"
+            es_mio = es_seller_mio(seller, seller_id)
+
+            mi_oferta = None
+            for oferta in offers:
+                if es_seller_mio(oferta.get("seller"), oferta.get("sellerId")):
+                    mi_oferta = oferta
+                    break
+
+            precio_mio = mi_oferta.get("precio", "") if mi_oferta else ""
+            stock_mio = mi_oferta.get("stock") if mi_oferta else None
+            if es_mio and not precio_mio:
+                precio_mio = price
+            if stock_mio is None:
+                stock_mio = normalizar_entero(item.get("cantidad"))
+
+            if es_mio:
+                nuevo_estado = "GANANDO"
+            elif mi_oferta:
+                nuevo_estado = "PERDIDO"
+            elif offers:
+                nuevo_estado = "NO_PRENDIDA"
+            else:
+                nuevo_estado = "PERDIDO"
 
             variante = " ".join(
                 parte for parte in [item.get("color", ""), item.get("size", "")] if parte
             ).strip()
             if nuevo_estado == "GANANDO":
                 ganando.append(f"• {item['producto'][:22]} {variante} → ${price}".strip())
-            else:
+            elif nuevo_estado == "PERDIDO":
                 perdiendo.append(f"• {item['producto'][:18]} {variante} → {seller} → ${price}".strip())
+            elif nuevo_estado == "NO_PRENDIDA":
+                no_prendidas.append(f"• {item['producto'][:18]} {variante} → {seller} → ${price}".strip())
 
             estado_anterior = ULTIMO_ESTADO.get(sku_patish)
             precio_anterior = ULTIMO_PRECIO.get(sku_patish)
@@ -1235,10 +1485,10 @@ def monitorear():
                     otros,
                 )
 
-            if estado_anterior == "GANANDO" and nuevo_estado == "PERDIDO":
+            if estado_anterior == "GANANDO" and nuevo_estado in {"PERDIDO", "NO_PRENDIDA"}:
                 enviar_alerta_perdida(item, seller, price, otros)
 
-            if estado_anterior == "PERDIDO" and nuevo_estado == "GANANDO":
+            if estado_anterior in {"PERDIDO", "NO_PRENDIDA"} and nuevo_estado == "GANANDO":
                 enviar_telegram(
                     "✅ <b>RECUPERASTE BUYBOX</b>\n\n"
                     f"Producto: {escapar(item['producto'])}\n"
@@ -1250,6 +1500,8 @@ def monitorear():
             ULTIMO_ESTADO[sku_patish] = nuevo_estado
             ULTIMO_PRECIO[sku_patish] = price
             ULTIMO_SELLER[sku_patish] = seller
+            ULTIMO_PRECIO_PATISH[sku_patish] = precio_mio
+            ULTIMO_STOCK_PATISH[sku_patish] = stock_mio
 
     if time.time() - ULTIMO_RESUMEN >= 900:
         bloqueadas = sum(1 for item in CATALOGO if item["estado_oferta"] == "BLOQUEADA")
@@ -1258,12 +1510,15 @@ def monitorear():
             f"🕒 {now_str}\n\n"
             f"🟢 Ganando: {len(ganando)}\n"
             f"🔴 Perdiendo: {len(perdiendo)}\n"
+            f"🟡 No prendida: {len(no_prendidas)}\n"
             f"🟠 Bloqueadas Liverpool: {bloqueadas}\n"
         )
         if ganando:
             mensaje += "\n🟢 <b>GANANDO</b>\n" + "\n".join(escapar(item) for item in ganando[:10]) + "\n"
         if perdiendo:
             mensaje += "\n🔴 <b>PERDIENDO</b>\n" + "\n".join(escapar(item) for item in perdiendo[:10]) + "\n"
+        if no_prendidas:
+            mensaje += "\n🟡 <b>NO PRENDIDA</b>\n" + "\n".join(escapar(item) for item in no_prendidas[:10]) + "\n"
         if bloqueadas:
             mensaje += "\n⚠️ Usa /bloqueadas para ver detalles."
         enviar_telegram(mensaje)
@@ -1276,7 +1531,10 @@ def monitorear():
             ULTIMA_FECHA_CSV = fecha_actual
 
     activas = sum(1 for item in CATALOGO if item["estado_oferta"] == "ACTIVA")
-    print(f"[{now_str}] ✅ 🟢{len(ganando)} 🔴{len(perdiendo)} / {activas} activas / {len(CATALOGO)} total")
+    print(
+        f"[{now_str}] ✅ 🟢{len(ganando)} 🔴{len(perdiendo)} 🟡{len(no_prendidas)}"
+        f" / {activas} activas / {len(CATALOGO)} total"
+    )
 
 
 def loop_monitor():
