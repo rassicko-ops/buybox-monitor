@@ -97,6 +97,9 @@ HTML_PANEL = """<!DOCTYPE html>
   .sort-select:focus{outline:none;border-color:var(--accent)}
   .search-help{font-size:.65rem;color:var(--muted)}
   .download-btn{display:inline-flex;align-items:center;justify-content:center;text-decoration:none}
+  .column-filter-row th{padding:8px 12px;border-bottom:1px solid var(--border);background:var(--surface)}
+  .column-filter{width:100%;min-width:90px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:7px 8px;font-family:'Space Mono',monospace;font-size:.64rem}
+  .column-filter:focus{outline:none;border-color:var(--accent)}
   .tw{overflow-x:auto}
   table{width:100%;border-collapse:collapse;font-size:.74rem}
   th{text-align:left;font-size:.6rem;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);padding:9px 12px;border-bottom:1px solid var(--border);white-space:nowrap}
@@ -115,6 +118,7 @@ HTML_PANEL = """<!DOCTYPE html>
   .btn{padding:9px 20px;border-radius:3px;border:none;font-family:'Space Mono',monospace;font-size:.72rem;font-weight:700;cursor:pointer;transition:opacity .2s}
   .btn:hover{opacity:.75}
   .bp{background:var(--accent);color:#000}
+  .bs{background:transparent;color:var(--text);border:1px solid var(--border)}
   .msg{margin-top:8px;font-size:.72rem;min-height:1em}
   .ok{color:var(--accent)}.err{color:var(--red)}
 </style>
@@ -177,6 +181,7 @@ HTML_PANEL = """<!DOCTYPE html>
       <option value="diferencia_desc">Orden: Mayor diferencia</option>
     </select>
     <div class="search-help" id="search-status">Sin busqueda activa</div>
+    <button type="button" class="btn bs" onclick="clearColumnFilters()">Limpiar filtros</button>
     <a id="download-link" class="btn bp download-btn" href="/api/exportar?estado=TODOS" target="_blank" rel="noreferrer">
       Descargar Excel de Todos
     </a>
@@ -189,6 +194,31 @@ HTML_PANEL = """<!DOCTYPE html>
           <th>Producto</th><th>Color</th><th>Tamano</th><th>SKU PATISH</th><th>SKU Liverpool</th><th>VGC</th>
           <th>Estado</th><th>Seller BuyBox</th><th>Precio Liverpool</th><th>Tu precio</th><th>Stock tuyo</th><th>Diferencia</th><th>URL</th>
         </tr>
+        <tr class="column-filter-row">
+          <th><input class="column-filter" data-col-filter="producto" type="search" placeholder="Producto" oninput="setColumnFilter('producto', this.value)"></th>
+          <th><input class="column-filter" data-col-filter="color" type="search" placeholder="Color" oninput="setColumnFilter('color', this.value)"></th>
+          <th><input class="column-filter" data-col-filter="size" type="search" placeholder="Tamano" oninput="setColumnFilter('size', this.value)"></th>
+          <th><input class="column-filter" data-col-filter="sku_patish" type="search" placeholder="SKU PATISH" oninput="setColumnFilter('sku_patish', this.value)"></th>
+          <th><input class="column-filter" data-col-filter="sku_liverpool" type="search" placeholder="SKU Liverpool" oninput="setColumnFilter('sku_liverpool', this.value)"></th>
+          <th><input class="column-filter" data-col-filter="vgc" type="search" placeholder="VGC" oninput="setColumnFilter('vgc', this.value)"></th>
+          <th>
+            <select class="column-filter" data-col-filter="estado" onchange="setColumnFilter('estado', this.value)">
+              <option value="">Todos</option>
+              <option value="GANANDO">Ganando</option>
+              <option value="PERDIDO">Perdido</option>
+              <option value="NO_PRENDIDA">No prendida</option>
+              <option value="BLOQUEADA">Bloqueada</option>
+              <option value="INACTIVA_STOCK">Sin stock</option>
+              <option value="SIN_DATOS">Sin datos</option>
+            </select>
+          </th>
+          <th><input class="column-filter" data-col-filter="seller_buybox" type="search" placeholder="Seller" oninput="setColumnFilter('seller_buybox', this.value)"></th>
+          <th><input class="column-filter" data-col-filter="precio_liverpool" type="search" placeholder=">15000" oninput="setColumnFilter('precio_liverpool', this.value)"></th>
+          <th><input class="column-filter" data-col-filter="precio_tuyo" type="search" placeholder=">15000" oninput="setColumnFilter('precio_tuyo', this.value)"></th>
+          <th><input class="column-filter" data-col-filter="stock_tuyo" type="search" placeholder=">0" oninput="setColumnFilter('stock_tuyo', this.value)"></th>
+          <th><input class="column-filter" data-col-filter="diferencia" type="search" placeholder="1000-2000" oninput="setColumnFilter('diferencia', this.value)"></th>
+          <th><input class="column-filter" data-col-filter="url" type="search" placeholder="URL" oninput="setColumnFilter('url', this.value)"></th>
+        </tr>
       </thead>
       <tbody id="tbody-estado">
         <tr><td colspan="13" style="color:var(--muted);text-align:center;padding:32px">Cargando...</td></tr>
@@ -200,7 +230,23 @@ HTML_PANEL = """<!DOCTYPE html>
 </main>
 
 <script>
-let filtroActual='TODOS', busquedaActual='', ordenActual='producto_asc', todosItems=[];
+const DEFAULT_COLUMN_FILTERS={
+  producto:'',
+  color:'',
+  size:'',
+  sku_patish:'',
+  sku_liverpool:'',
+  vgc:'',
+  estado:'',
+  seller_buybox:'',
+  precio_liverpool:'',
+  precio_tuyo:'',
+  stock_tuyo:'',
+  diferencia:'',
+  url:'',
+};
+
+let filtroActual='TODOS', busquedaActual='', ordenActual='producto_asc', todosItems=[], columnFilters={...DEFAULT_COLUMN_FILTERS};
 
 document.getElementById('excel-input').addEventListener('change',function(){
   document.getElementById('file-name-lbl').textContent=this.files[0]?.name||'Ningun archivo';
@@ -234,10 +280,7 @@ function setFiltro(f,btn){
 
 function setBusqueda(value){
   busquedaActual=(value||'').trim().toLowerCase();
-  const status=document.getElementById('search-status');
-  status.textContent=busquedaActual
-    ? `Busqueda activa: ${value.trim()}`
-    : 'Sin busqueda activa';
+  actualizarResumenFiltros();
   actualizarDescarga();
   renderTabla();
 }
@@ -248,12 +291,52 @@ function setOrden(value){
   renderTabla();
 }
 
+function setColumnFilter(key,value){
+  columnFilters[key]=(value||'').trim();
+  actualizarResumenFiltros();
+  actualizarDescarga();
+  renderTabla();
+}
+
+function clearColumnFilters(){
+  columnFilters={...DEFAULT_COLUMN_FILTERS};
+  document.querySelectorAll('[data-col-filter]').forEach(input=>{
+    input.value='';
+  });
+  actualizarResumenFiltros();
+  actualizarDescarga();
+  renderTabla();
+}
+
+function actualizarResumenFiltros(){
+  const status=document.getElementById('search-status');
+  const activos=Object.values(columnFilters).filter(Boolean).length;
+  if(busquedaActual && activos){
+    status.textContent=`Busqueda general: ${busquedaActual} · filtros por columna: ${activos}`;
+    return;
+  }
+  if(busquedaActual){
+    status.textContent=`Busqueda general: ${busquedaActual}`;
+    return;
+  }
+  if(activos){
+    status.textContent=`Filtros por columna activos: ${activos}`;
+    return;
+  }
+  status.textContent='Sin busqueda activa';
+}
+
 function actualizarDescarga(){
   const link=document.getElementById('download-link');
   const params=new URLSearchParams();
   params.set('estado',filtroActual);
   if(busquedaActual){
     params.set('q',busquedaActual);
+  }
+  for(const [key,value] of Object.entries(columnFilters)){
+    if(value){
+      params.set(`f_${key}`,value);
+    }
   }
   params.set('sort',ordenActual);
   link.href='/api/exportar?'+params.toString();
@@ -271,7 +354,7 @@ function escapeHtml(value){
 }
 
 function numeroSeguro(value){
-  const n=parseFloat(value);
+  const n=parseFloat(String(value ?? '').replaceAll('$','').replaceAll(',',''));
   return Number.isFinite(n)?n:null;
 }
 
@@ -336,6 +419,58 @@ function ordenarItems(items){
   return copia.sort((a,b)=>String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'}));
 }
 
+function coincideTexto(value, filtro){
+  if(!filtro) return true;
+  return String(value ?? '').toLowerCase().includes(String(filtro).toLowerCase());
+}
+
+function coincideNumerico(value, filtro){
+  const criterio=String(filtro||'').replaceAll(' ','');
+  if(!criterio) return true;
+  const numero=numeroSeguro(value);
+  if(numero===null) return false;
+  let match=criterio.match(/^(-?\\d+(?:\\.\\d+)?)\\-(-?\\d+(?:\\.\\d+)?)$/);
+  if(match){
+    const a=parseFloat(match[1]);
+    const b=parseFloat(match[2]);
+    const min=Math.min(a,b);
+    const max=Math.max(a,b);
+    return numero>=min && numero<=max;
+  }
+  match=criterio.match(/^(>=|<=|>|<|=)?(-?\\d+(?:\\.\\d+)?)$/);
+  if(!match){
+    return false;
+  }
+  const op=match[1]||'=';
+  const target=parseFloat(match[2]);
+  if(op==='>') return numero>target;
+  if(op==='<') return numero<target;
+  if(op==='>=') return numero>=target;
+  if(op==='<=') return numero<=target;
+  return numero===target;
+}
+
+function aplicarFiltrosColumna(items){
+  return items.filter(item=>{
+    if(columnFilters.estado && String(item.estado||'')!==columnFilters.estado){
+      return false;
+    }
+    if(!coincideTexto(item.producto,columnFilters.producto)) return false;
+    if(!coincideTexto(item.color,columnFilters.color)) return false;
+    if(!coincideTexto(item.size,columnFilters.size)) return false;
+    if(!coincideTexto(item.sku_patish,columnFilters.sku_patish)) return false;
+    if(!coincideTexto(item.sku_liverpool,columnFilters.sku_liverpool)) return false;
+    if(!coincideTexto(item.vgc,columnFilters.vgc)) return false;
+    if(!coincideTexto(item.seller_buybox,columnFilters.seller_buybox)) return false;
+    if(!coincideTexto(item.url,columnFilters.url)) return false;
+    if(!coincideNumerico(item.precio_liverpool,columnFilters.precio_liverpool)) return false;
+    if(!coincideNumerico(item.precio_tuyo,columnFilters.precio_tuyo)) return false;
+    if(!coincideNumerico(item.stock_tuyo,columnFilters.stock_tuyo)) return false;
+    if(!coincideNumerico(diferenciaNumero(item),columnFilters.diferencia)) return false;
+    return true;
+  });
+}
+
 function renderTabla(){
   let items=filtroActual==='TODOS'?todosItems:todosItems.filter(i=>i.estado===filtroActual);
   if(busquedaActual){
@@ -347,6 +482,7 @@ function renderTabla(){
       return producto.includes(busquedaActual) || skuLiverpool.includes(busquedaActual) || skuPatish.includes(busquedaActual) || vgc.includes(busquedaActual);
     });
   }
+  items=aplicarFiltrosColumna(items);
   items=ordenarItems(items);
   document.getElementById('count-visible').textContent=items.length;
   const tbody=document.getElementById('tbody-estado');
@@ -633,7 +769,104 @@ def construir_items_estado():
     return items
 
 
-def filtrar_items_estado(items, estado, busqueda):
+COLUMNAS_FILTRO_TEXTO = (
+    "producto",
+    "color",
+    "size",
+    "sku_patish",
+    "sku_liverpool",
+    "vgc",
+    "seller_buybox",
+    "url",
+)
+
+COLUMNAS_FILTRO_NUMERICO = (
+    "precio_liverpool",
+    "precio_tuyo",
+    "stock_tuyo",
+    "diferencia",
+)
+
+
+def obtener_filtros_columna_request():
+    filtros = {}
+    for campo in (*COLUMNAS_FILTRO_TEXTO, "estado", *COLUMNAS_FILTRO_NUMERICO):
+        valor = request.args.get(f"f_{campo}", "").strip()
+        if valor:
+            filtros[campo] = valor
+    return filtros
+
+
+def coincide_filtro_texto(valor, filtro):
+    if not filtro:
+        return True
+    return filtro.strip().lower() in str(valor or "").lower()
+
+
+def coincide_filtro_numerico(valor, filtro):
+    criterio = (filtro or "").replace(" ", "")
+    if not criterio:
+        return True
+
+    numero = normalizar_precio(valor)
+    if numero is None:
+        return False
+
+    rango = re.fullmatch(r"(-?\d+(?:\.\d+)?)\-(-?\d+(?:\.\d+)?)", criterio)
+    if rango:
+        minimo = float(rango.group(1))
+        maximo = float(rango.group(2))
+        if minimo > maximo:
+            minimo, maximo = maximo, minimo
+        return minimo <= numero <= maximo
+
+    comparacion = re.fullmatch(r"(>=|<=|>|<|=)?(-?\d+(?:\.\d+)?)", criterio)
+    if not comparacion:
+        return False
+
+    operador = comparacion.group(1) or "="
+    objetivo = float(comparacion.group(2))
+
+    if operador == ">":
+        return numero > objetivo
+    if operador == "<":
+        return numero < objetivo
+    if operador == ">=":
+        return numero >= objetivo
+    if operador == "<=":
+        return numero <= objetivo
+    return numero == objetivo
+
+
+def aplicar_filtros_columna(items, filtros_columna):
+    if not filtros_columna:
+        return items
+
+    filtrados = []
+    for item in items:
+        if filtros_columna.get("estado") and item.get("estado", "") != filtros_columna["estado"]:
+            continue
+
+        coincide = True
+        for campo in COLUMNAS_FILTRO_TEXTO:
+            if not coincide_filtro_texto(item.get(campo, ""), filtros_columna.get(campo, "")):
+                coincide = False
+                break
+        if not coincide:
+            continue
+
+        for campo in COLUMNAS_FILTRO_NUMERICO:
+            valor = calcular_diferencia_item(item) if campo == "diferencia" else item.get(campo)
+            if not coincide_filtro_numerico(valor, filtros_columna.get(campo, "")):
+                coincide = False
+                break
+        if coincide:
+            filtrados.append(item)
+
+    return filtrados
+
+
+def filtrar_items_estado(items, estado, busqueda, filtros_columna=None):
     filtrados = items
     if estado and estado != "TODOS":
         filtrados = [item for item in filtrados if item["estado"] == estado]
@@ -647,6 +880,7 @@ def filtrar_items_estado(items, estado, busqueda):
             or termino in str(item.get("sku_patish", "")).lower()
             or termino in str(item.get("vgc", "")).lower()
         ]
+    filtrados = aplicar_filtros_columna(filtrados, filtros_columna or {})
     return filtrados
 
 
@@ -778,9 +1012,10 @@ def api_exportar():
     estado = request.args.get("estado", "TODOS").strip().upper() or "TODOS"
     busqueda = request.args.get("q", "").strip()
     orden = request.args.get("sort", "producto_asc").strip()
+    filtros_columna = obtener_filtros_columna_request()
 
     items = construir_items_estado()
-    filtrados = filtrar_items_estado(items, estado, busqueda)
+    filtrados = filtrar_items_estado(items, estado, busqueda, filtros_columna)
     filtrados = ordenar_items_estado(filtrados, orden)
 
     columnas = [
@@ -823,7 +1058,7 @@ def api_exportar():
 
     salida = BytesIO()
     nombre_estado = estado.lower()
-    if busqueda:
+    if busqueda or filtros_columna:
         nombre_estado += "_filtrado"
     nombre_archivo = f"buybox_{nombre_estado}_{datetime.now(CDMX_TZ).strftime('%Y%m%d_%H%M%S')}.xlsx"
 
