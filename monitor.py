@@ -9,6 +9,7 @@ import time
 from io import BytesIO
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from functools import cmp_to_key
 
 import pandas as pd
 import requests
@@ -62,71 +63,108 @@ HTML_PANEL = """<!DOCTYPE html>
 <title>BuyBox Monitor v3 - PATISH</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap');
-  :root{--bg:#0a0a0f;--surface:#13131a;--border:#1e1e2e;--accent:#00ff88;--red:#ff4466;--yellow:#ffbb00;--orange:#ff8800;--text:#e0e0e0;--muted:#555;--card:#16161f}
+  :root{--bg:#f4f1ea;--surface:#fbfaf7;--surface-2:#f8f5ee;--border:#d9d1c2;--accent:#147a54;--accent-2:#0f5f43;--red:#c94f5d;--yellow:#b88400;--orange:#cb6f2d;--text:#243136;--muted:#7a8178;--card:#ffffff;--shadow:0 22px 60px rgba(36,49,54,.08);--shadow-soft:0 14px 26px rgba(36,49,54,.07);--header:#eef3ec;--ring:rgba(20,122,84,.14)}
   *{box-sizing:border-box;margin:0;padding:0}
-  body{background:var(--bg);color:var(--text);font-family:'Space Mono',monospace;min-height:100vh}
-  header{border-bottom:1px solid var(--border);padding:18px 32px;display:flex;align-items:center;gap:14px;background:var(--surface)}
+  body{background:
+    radial-gradient(circle at top left,rgba(20,122,84,.16),transparent 24%),
+    radial-gradient(circle at top right,rgba(203,111,45,.14),transparent 20%),
+    linear-gradient(180deg,#faf6ef 0%,#f3eee4 48%,#edf3ee 100%);
+    color:var(--text);font-family:'Space Mono',monospace;min-height:100vh;position:relative}
+  body::before{content:'';position:fixed;inset:0;pointer-events:none;background-image:
+    linear-gradient(rgba(36,49,54,.035) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(36,49,54,.03) 1px,transparent 1px);
+    background-size:32px 32px;mask-image:radial-gradient(circle at top,rgba(0,0,0,.95),rgba(0,0,0,.25) 60%,transparent 100%);opacity:.28}
+  header{border-bottom:1px solid rgba(217,209,194,.8);padding:20px 32px;display:flex;align-items:center;gap:14px;background:rgba(255,251,245,.78);backdrop-filter:blur(12px);position:sticky;top:0;z-index:20;box-shadow:0 10px 40px rgba(36,49,54,.05)}
+  .brand{display:flex;align-items:center;gap:14px}
   .dot{width:9px;height:9px;background:var(--accent);border-radius:50%;animation:pulse 2s infinite}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.2}}
-  header h1{font-family:'Syne',sans-serif;font-weight:800;font-size:1.1rem;letter-spacing:.06em;color:#fff}
-  header .tag{margin-left:auto;font-size:.65rem;color:var(--muted);border:1px solid var(--border);padding:3px 10px;border-radius:3px}
-  .stats{display:flex;gap:1px;background:var(--border);border-bottom:1px solid var(--border);flex-wrap:wrap}
-  .stat{flex:1;background:var(--surface);padding:16px 20px;text-align:center;min-width:180px}
+  .brand-copy{display:flex;flex-direction:column;gap:3px}
+  header h1{font-family:'Syne',sans-serif;font-weight:800;font-size:1.18rem;letter-spacing:.08em;color:var(--text);line-height:1}
+  .brand-sub{font-size:.62rem;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
+  header .tag{margin-left:auto;font-size:.65rem;color:var(--muted);border:1px solid rgba(217,209,194,.9);padding:5px 12px;border-radius:999px;background:rgba(255,255,255,.86);box-shadow:var(--shadow-soft)}
+  .stats{display:flex;gap:14px;max-width:1500px;margin:20px auto 0;padding:0 32px;flex-wrap:wrap}
+  .stat{flex:1;background:linear-gradient(180deg,rgba(255,255,255,.95),rgba(249,246,239,.95));padding:18px 20px;text-align:center;min-width:180px;border:1px solid rgba(217,209,194,.9);border-radius:22px;box-shadow:var(--shadow-soft);position:relative;overflow:hidden}
+  .stat::before{content:'';position:absolute;left:0;right:0;top:0;height:4px;background:rgba(122,129,120,.24)}
   .stat .num{font-family:'Syne',sans-serif;font-size:2rem;font-weight:800;line-height:1}
   .stat .lbl{font-size:.6rem;color:var(--muted);margin-top:5px;text-transform:uppercase;letter-spacing:.1em}
-  .stat.g .num{color:var(--accent)}.stat.r .num{color:var(--red)}.stat.y .num{color:var(--yellow)}.stat.o .num{color:var(--orange)}.stat.gr .num{color:var(--muted)}.stat.w .num{color:#fff}
-  main{padding:22px 32px;max-width:1500px;margin:0 auto}
+  .stat.g .num{color:var(--accent)}.stat.r .num{color:var(--red)}.stat.y .num{color:var(--yellow)}.stat.o .num{color:var(--orange)}.stat.gr .num{color:var(--muted)}.stat.w .num{color:var(--text)}
+  .stat.g::before{background:linear-gradient(90deg,var(--accent),rgba(20,122,84,.18))}
+  .stat.r::before{background:linear-gradient(90deg,var(--red),rgba(201,79,93,.16))}
+  .stat.y::before{background:linear-gradient(90deg,var(--yellow),rgba(184,132,0,.16))}
+  .stat.o::before{background:linear-gradient(90deg,var(--orange),rgba(203,111,45,.16))}
+  .stat.gr::before{background:linear-gradient(90deg,#8b9289,rgba(139,146,137,.12))}
+  .stat.w::before{background:linear-gradient(90deg,#243136,rgba(36,49,54,.12))}
+  main{padding:28px 32px 40px;max-width:1500px;margin:0 auto}
   .sec{font-family:'Syne',sans-serif;font-size:.7rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:28px 0 10px;display:flex;align-items:center;gap:12px}
-  .sec-count{background:var(--border);color:var(--muted);padding:2px 8px;border-radius:3px;font-size:.65rem}
-  .upload-bar{background:var(--card);border:1px solid var(--border);border-radius:5px;padding:18px 22px;margin-bottom:20px}
-  .upload-bar h3{font-family:'Syne',sans-serif;font-size:.85rem;margin-bottom:6px;color:#fff}
+  .sec-count{background:rgba(217,209,194,.85);color:var(--muted);padding:3px 10px;border-radius:999px;font-size:.65rem}
+  .upload-bar{background:linear-gradient(180deg,rgba(255,255,255,.95),rgba(250,247,240,.96));border:1px solid rgba(217,209,194,.92);border-radius:24px;padding:22px 22px 24px;margin-bottom:22px;box-shadow:var(--shadow);position:relative;overflow:hidden}
+  .upload-bar::before{content:'';position:absolute;inset:0 0 auto 0;height:5px;background:linear-gradient(90deg,var(--accent),rgba(20,122,84,.18),rgba(203,111,45,.2))}
+  .upload-bar h3{font-family:'Syne',sans-serif;font-size:.85rem;margin-bottom:6px;color:var(--text)}
   .upload-bar p{font-size:.68rem;color:var(--muted);margin-bottom:14px}
   .upload-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-  .file-label{padding:8px 18px;border-radius:3px;border:1px solid var(--border);color:var(--text);font-family:'Space Mono',monospace;font-size:.72rem;cursor:pointer;transition:border-color .2s}
-  .file-label:hover{border-color:var(--accent)}
+  .file-label{padding:10px 18px;border-radius:999px;border:1px solid var(--border);color:var(--text);font-family:'Space Mono',monospace;font-size:.72rem;cursor:pointer;transition:border-color .2s,transform .2s,box-shadow .2s;background:#fff;box-shadow:var(--shadow-soft)}
+  .file-label:hover{border-color:var(--accent);transform:translateY(-1px);box-shadow:0 16px 26px rgba(20,122,84,.08)}
   .file-name{font-size:.68rem;color:var(--muted)}
   input[type=file]{display:none}
   .filters{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
-  .filter-btn{padding:5px 14px;border-radius:3px;border:1px solid var(--border);background:transparent;color:var(--muted);font-family:'Space Mono',monospace;font-size:.68rem;cursor:pointer;transition:all .15s}
-  .filter-btn:hover{border-color:var(--accent);color:var(--accent)}
-  .filter-btn.active{background:var(--accent);color:#000;border-color:var(--accent)}
-  .search-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:0 0 14px}
-  .search-input{min-width:280px;flex:1;max-width:460px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:9px 12px;font-family:'Space Mono',monospace;font-size:.72rem}
-  .search-input:focus{outline:none;border-color:var(--accent)}
-  .sort-select{background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:9px 12px;font-family:'Space Mono',monospace;font-size:.72rem;min-width:220px}
-  .sort-select:focus{outline:none;border-color:var(--accent)}
-  .search-help{font-size:.65rem;color:var(--muted)}
+  .filter-btn{padding:8px 14px;border-radius:999px;border:1px solid rgba(217,209,194,.95);background:rgba(255,255,255,.82);color:var(--muted);font-family:'Space Mono',monospace;font-size:.68rem;cursor:pointer;transition:all .15s;box-shadow:var(--shadow-soft)}
+  .filter-btn:hover{border-color:var(--accent);color:var(--accent);transform:translateY(-1px)}
+  .filter-btn.active{background:linear-gradient(180deg,var(--accent),var(--accent-2));color:#fff;border-color:var(--accent);box-shadow:0 14px 24px rgba(20,122,84,.18)}
+  .search-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:0 0 16px;padding:14px 16px;background:rgba(255,255,255,.72);border:1px solid rgba(217,209,194,.9);border-radius:22px;box-shadow:var(--shadow-soft)}
+  .search-input{min-width:280px;flex:1;max-width:460px;background:#fff;color:var(--text);border:1px solid rgba(217,209,194,.92);border-radius:16px;padding:12px 14px;font-family:'Space Mono',monospace;font-size:.72rem;box-shadow:inset 0 1px 0 rgba(255,255,255,.6),0 8px 20px rgba(36,49,54,.04)}
+  .search-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 4px var(--ring)}
+  .search-help{font-size:.65rem;color:var(--muted);padding:9px 12px;border-radius:999px;border:1px solid rgba(217,209,194,.9);background:rgba(252,249,244,.92)}
   .download-btn{display:inline-flex;align-items:center;justify-content:center;text-decoration:none}
-  .column-filter-row th{padding:8px 12px;border-bottom:1px solid var(--border);background:var(--surface)}
-  .column-filter{width:100%;min-width:90px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:7px 8px;font-family:'Space Mono',monospace;font-size:.64rem}
-  .column-filter:focus{outline:none;border-color:var(--accent)}
-  .tw{overflow-x:auto}
+  .column-filter-row th{padding:9px 12px;border-bottom:1px solid var(--border);background:var(--header);position:sticky;top:44px;z-index:4}
+  .column-filter{width:100%;min-width:90px;background:rgba(255,255,255,.95);color:var(--text);border:1px solid var(--border);border-radius:12px;padding:8px 9px;font-family:'Space Mono',monospace;font-size:.64rem}
+  .column-filter:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--ring)}
+  .tw{overflow:auto;border:1px solid rgba(217,209,194,.95);border-radius:24px;background:rgba(255,255,255,.92);box-shadow:var(--shadow)}
   table{width:100%;border-collapse:collapse;font-size:.74rem}
-  th{text-align:left;font-size:.6rem;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);padding:9px 12px;border-bottom:1px solid var(--border);white-space:nowrap}
-  td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
-  tr:hover td{background:var(--card)}
-  .badge{display:inline-block;padding:2px 7px;border-radius:3px;font-size:.6rem;font-weight:700;letter-spacing:.06em;white-space:nowrap}
-  .bw{background:rgba(0,255,136,.1);color:var(--accent);border:1px solid rgba(0,255,136,.2)}
-  .bl{background:rgba(255,68,102,.1);color:var(--red);border:1px solid rgba(255,68,102,.2)}
-  .by{background:rgba(255,187,0,.1);color:var(--yellow);border:1px solid rgba(255,187,0,.2)}
-  .bo{background:rgba(255,136,0,.1);color:var(--orange);border:1px solid rgba(255,136,0,.2)}
-  .bn{background:rgba(100,100,100,.1);color:var(--muted);border:1px solid var(--border)}
-  a.lnk{color:var(--muted);text-decoration:none;font-size:.62rem} a.lnk:hover{color:var(--accent)}
+  th{text-align:left;font-size:.6rem;text-transform:uppercase;letter-spacing:.13em;color:var(--muted);padding:12px 12px;border-bottom:1px solid var(--border);white-space:nowrap;background:linear-gradient(180deg,#f8f5ee,#f4f1ea)}
+  thead tr:first-child th{position:sticky;top:0;z-index:5;background:linear-gradient(180deg,#faf7f0,#f2ede3)}
+  td{padding:11px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+  tbody tr:nth-child(even) td{background:rgba(20,122,84,.028)}
+  tr:hover td{background:#f6faf7}
+  .sortable{cursor:pointer;user-select:none}
+  .sort-label{display:inline-flex;align-items:center;gap:6px}
+  .sort-icon{font-size:.8rem;color:#a0a69a;transition:color .15s}
+  .sort-icon.active{color:var(--accent)}
+  .badge{display:inline-block;padding:4px 9px;border-radius:999px;font-size:.57rem;font-weight:700;letter-spacing:.08em;white-space:nowrap}
+  .bw{background:rgba(20,122,84,.08);color:var(--accent);border:1px solid rgba(20,122,84,.18)}
+  .bl{background:rgba(201,79,93,.08);color:var(--red);border:1px solid rgba(201,79,93,.18)}
+  .by{background:rgba(184,132,0,.1);color:var(--yellow);border:1px solid rgba(184,132,0,.16)}
+  .bo{background:rgba(203,111,45,.1);color:var(--orange);border:1px solid rgba(203,111,45,.18)}
+  .bn{background:rgba(122,129,120,.08);color:var(--muted);border:1px solid var(--border)}
+  a.lnk{color:var(--muted);text-decoration:none;font-size:.62rem;border-bottom:1px solid transparent} a.lnk:hover{color:var(--accent);border-color:rgba(20,122,84,.25)}
   .diff-neg{color:var(--red);font-size:.68rem}
   .diff-pos{color:var(--accent);font-size:.68rem}
   .ts{font-size:.62rem;color:var(--muted);text-align:right;margin-top:10px}
-  .btn{padding:9px 20px;border-radius:3px;border:none;font-family:'Space Mono',monospace;font-size:.72rem;font-weight:700;cursor:pointer;transition:opacity .2s}
-  .btn:hover{opacity:.75}
-  .bp{background:var(--accent);color:#000}
-  .bs{background:transparent;color:var(--text);border:1px solid var(--border)}
+  .btn{padding:11px 20px;border-radius:999px;border:none;font-family:'Space Mono',monospace;font-size:.72rem;font-weight:700;cursor:pointer;transition:opacity .2s,transform .2s,box-shadow .2s}
+  .btn:hover{opacity:.95;transform:translateY(-1px)}
+  .bp{background:linear-gradient(180deg,var(--accent),var(--accent-2));color:#fff;box-shadow:0 16px 24px rgba(20,122,84,.2)}
+  .bs{background:#fff;color:var(--text);border:1px solid var(--border);box-shadow:var(--shadow-soft)}
   .msg{margin-top:8px;font-size:.72rem;min-height:1em}
   .ok{color:var(--accent)}.err{color:var(--red)}
+  @media(max-width:980px){
+    header{padding:16px 18px;flex-wrap:wrap}
+    header .tag{margin-left:0}
+    .stats{padding:0 18px}
+    main{padding:22px 18px 32px}
+    .search-row{padding:12px}
+    .search-input{max-width:none;min-width:220px}
+    .tw{border-radius:18px}
+  }
 </style>
 </head>
 <body>
 <header>
-  <div class="dot"></div>
-  <h1>BUYBOX MONITOR v3</h1>
+  <div class="brand">
+    <div class="dot"></div>
+    <div class="brand-copy">
+      <h1>BUYBOX MONITOR v3</h1>
+      <div class="brand-sub">Monitoreo de BuyBox, stock y variantes</div>
+    </div>
+  </div>
   <span class="tag">PATISH · Liverpool MX · variantes</span>
 </header>
 
@@ -172,14 +210,6 @@ HTML_PANEL = """<!DOCTYPE html>
       placeholder="Buscar por nombre, SKU Liverpool, SKU PATISH o VGC"
       oninput="setBusqueda(this.value)"
     >
-    <select id="sort-select" class="sort-select" onchange="setOrden(this.value)">
-      <option value="producto_asc">Orden: Nombre A-Z</option>
-      <option value="producto_desc">Orden: Nombre Z-A</option>
-      <option value="stock_desc">Orden: Mayor stock</option>
-      <option value="stock_asc">Orden: Menor stock</option>
-      <option value="diferencia_asc">Orden: Menor diferencia</option>
-      <option value="diferencia_desc">Orden: Mayor diferencia</option>
-    </select>
     <div class="search-help" id="search-status">Sin busqueda activa</div>
     <button type="button" class="btn bs" onclick="clearColumnFilters()">Limpiar filtros</button>
     <a id="download-link" class="btn bp download-btn" href="/api/exportar?estado=TODOS" target="_blank" rel="noreferrer">
@@ -191,8 +221,19 @@ HTML_PANEL = """<!DOCTYPE html>
     <table>
       <thead>
         <tr>
-          <th>Producto</th><th>Color</th><th>Tamano</th><th>SKU PATISH</th><th>SKU Liverpool</th><th>VGC</th>
-          <th>Estado</th><th>Seller BuyBox</th><th>Precio Liverpool</th><th>Tu precio</th><th>Stock tuyo</th><th>Diferencia</th><th>URL</th>
+          <th class="sortable" onclick="toggleSort('producto')"><span class="sort-label">Producto <span class="sort-icon" id="sort-producto">↕</span></span></th>
+          <th class="sortable" onclick="toggleSort('color')"><span class="sort-label">Color <span class="sort-icon" id="sort-color">↕</span></span></th>
+          <th class="sortable" onclick="toggleSort('size')"><span class="sort-label">Tamano <span class="sort-icon" id="sort-size">↕</span></span></th>
+          <th class="sortable" onclick="toggleSort('sku_patish')"><span class="sort-label">SKU PATISH <span class="sort-icon" id="sort-sku_patish">↕</span></span></th>
+          <th class="sortable" onclick="toggleSort('sku_liverpool')"><span class="sort-label">SKU Liverpool <span class="sort-icon" id="sort-sku_liverpool">↕</span></span></th>
+          <th class="sortable" onclick="toggleSort('vgc')"><span class="sort-label">VGC <span class="sort-icon" id="sort-vgc">↕</span></span></th>
+          <th class="sortable" onclick="toggleSort('estado')"><span class="sort-label">Estado <span class="sort-icon" id="sort-estado">↕</span></span></th>
+          <th class="sortable" onclick="toggleSort('seller_buybox')"><span class="sort-label">Seller BuyBox <span class="sort-icon" id="sort-seller_buybox">↕</span></span></th>
+          <th class="sortable" onclick="toggleSort('precio_liverpool')"><span class="sort-label">Precio Liverpool <span class="sort-icon" id="sort-precio_liverpool">↕</span></span></th>
+          <th class="sortable" onclick="toggleSort('precio_tuyo')"><span class="sort-label">Tu precio <span class="sort-icon" id="sort-precio_tuyo">↕</span></span></th>
+          <th class="sortable" onclick="toggleSort('stock_tuyo')"><span class="sort-label">Stock tuyo <span class="sort-icon" id="sort-stock_tuyo">↕</span></span></th>
+          <th class="sortable" onclick="toggleSort('diferencia')"><span class="sort-label">Diferencia <span class="sort-icon" id="sort-diferencia">↕</span></span></th>
+          <th class="sortable" onclick="toggleSort('url')"><span class="sort-label">URL <span class="sort-icon" id="sort-url">↕</span></span></th>
         </tr>
         <tr class="column-filter-row">
           <th><input class="column-filter" data-col-filter="producto" type="search" placeholder="Producto" oninput="setColumnFilter('producto', this.value)"></th>
@@ -246,6 +287,9 @@ const DEFAULT_COLUMN_FILTERS={
   url:'',
 };
 
+const NUMERIC_SORT_FIELDS=new Set(['precio_liverpool','precio_tuyo','stock_tuyo','diferencia']);
+const STATE_SORT_ORDER={GANANDO:0,PERDIDO:1,NO_PRENDIDA:2,BLOQUEADA:3,INACTIVA_STOCK:4,SIN_DATOS:5};
+
 let filtroActual='TODOS', busquedaActual='', ordenActual='producto_asc', todosItems=[], columnFilters={...DEFAULT_COLUMN_FILTERS};
 
 document.getElementById('excel-input').addEventListener('change',function(){
@@ -287,8 +331,37 @@ function setBusqueda(value){
 
 function setOrden(value){
   ordenActual=value||'producto_asc';
+  actualizarIndicadoresOrden();
   actualizarDescarga();
   renderTabla();
+}
+
+function obtenerOrdenActual(){
+  const match=String(ordenActual||'producto_asc').match(/^(.*)_(asc|desc)$/);
+  if(!match){
+    return {field:'producto',direction:'asc'};
+  }
+  return {field:match[1]||'producto',direction:match[2]||'asc'};
+}
+
+function toggleSort(field){
+  const actual=obtenerOrdenActual();
+  const siguienteDireccion=actual.field===field && actual.direction==='asc'?'desc':'asc';
+  setOrden(`${field}_${siguienteDireccion}`);
+}
+
+function actualizarIndicadoresOrden(){
+  document.querySelectorAll('.sort-icon').forEach(icon=>{
+    icon.textContent='↕';
+    icon.classList.remove('active');
+  });
+  const actual=obtenerOrdenActual();
+  const icon=document.getElementById(`sort-${actual.field}`);
+  if(!icon){
+    return;
+  }
+  icon.textContent=actual.direction==='asc'?'↑':'↓';
+  icon.classList.add('active');
 }
 
 function setColumnFilter(key,value){
@@ -367,56 +440,50 @@ function diferenciaNumero(item){
   return precioLiverpool-precioTuyo;
 }
 
+function textoSeguro(value){
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function valorOrdenable(item,field){
+  if(field==='diferencia'){
+    return diferenciaNumero(item);
+  }
+  if(field==='estado'){
+    return STATE_SORT_ORDER[String(item.estado||'').trim()] ?? 999;
+  }
+  if(NUMERIC_SORT_FIELDS.has(field)){
+    return numeroSeguro(item[field]);
+  }
+  return textoSeguro(item[field]);
+}
+
+function compararTexto(a,b){
+  return textoSeguro(a).localeCompare(textoSeguro(b),'es',{sensitivity:'base',numeric:true});
+}
+
 function ordenarItems(items){
   const copia=[...items];
-  if(ordenActual==='producto_desc'){
-    return copia.sort((a,b)=>String(b.producto||'').localeCompare(String(a.producto||''),'es',{sensitivity:'base'}));
-  }
-  if(ordenActual==='stock_desc'){
-    return copia.sort((a,b)=>{
-      const av=(a.stock_tuyo===0 || a.stock_tuyo)?Number(a.stock_tuyo):null;
-      const bv=(b.stock_tuyo===0 || b.stock_tuyo)?Number(b.stock_tuyo):null;
-      if(av===null && bv===null) return String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'});
-      if(av===null) return 1;
-      if(bv===null) return -1;
-      if(av!==bv) return bv-av;
-      return String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'});
-    });
-  }
-  if(ordenActual==='stock_asc'){
-    return copia.sort((a,b)=>{
-      const av=(a.stock_tuyo===0 || a.stock_tuyo)?Number(a.stock_tuyo):null;
-      const bv=(b.stock_tuyo===0 || b.stock_tuyo)?Number(b.stock_tuyo):null;
-      if(av===null && bv===null) return String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'});
-      if(av===null) return 1;
-      if(bv===null) return -1;
-      if(av!==bv) return av-bv;
-      return String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'});
-    });
-  }
-  if(ordenActual==='diferencia_desc'){
-    return copia.sort((a,b)=>{
-      const av=diferenciaNumero(a);
-      const bv=diferenciaNumero(b);
-      if(av===null && bv===null) return String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'});
-      if(av===null) return 1;
-      if(bv===null) return -1;
-      if(av!==bv) return bv-av;
-      return String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'});
-    });
-  }
-  if(ordenActual==='diferencia_asc'){
-    return copia.sort((a,b)=>{
-      const av=diferenciaNumero(a);
-      const bv=diferenciaNumero(b);
-      if(av===null && bv===null) return String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'});
-      if(av===null) return 1;
-      if(bv===null) return -1;
-      if(av!==bv) return av-bv;
-      return String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'});
-    });
-  }
-  return copia.sort((a,b)=>String(a.producto||'').localeCompare(String(b.producto||''),'es',{sensitivity:'base'}));
+  const actual=obtenerOrdenActual();
+  const factor=actual.direction==='desc'?-1:1;
+  return copia.sort((a,b)=>{
+    const av=valorOrdenable(a,actual.field);
+    const bv=valorOrdenable(b,actual.field);
+    const aVacio=av===null || av===undefined || av==='';
+    const bVacio=bv===null || bv===undefined || bv==='';
+    if(aVacio && !bVacio) return 1;
+    if(!aVacio && bVacio) return -1;
+    if(!aVacio && !bVacio){
+      if(typeof av==='number' && typeof bv==='number'){
+        if(av!==bv) return (av-bv)*factor;
+      }else{
+        const cmp=String(av).localeCompare(String(bv),'es',{sensitivity:'base',numeric:true});
+        if(cmp!==0) return cmp*factor;
+      }
+    }
+    const productoCmp=compararTexto(a.producto,b.producto);
+    if(productoCmp!==0) return productoCmp;
+    return compararTexto(a.sku_patish,b.sku_patish);
+  });
 }
 
 function coincideTexto(value, filtro){
@@ -484,6 +551,7 @@ function renderTabla(){
   }
   items=aplicarFiltrosColumna(items);
   items=ordenarItems(items);
+  actualizarIndicadoresOrden();
   document.getElementById('count-visible').textContent=items.length;
   const tbody=document.getElementById('tbody-estado');
   if(!items.length){
@@ -892,41 +960,107 @@ def calcular_diferencia_item(item):
     return precio_liverpool - precio_tuyo
 
 
+ESTADO_ORDEN = {
+    "GANANDO": 0,
+    "PERDIDO": 1,
+    "NO_PRENDIDA": 2,
+    "BLOQUEADA": 3,
+    "INACTIVA_STOCK": 4,
+    "SIN_DATOS": 5,
+}
+
+SORT_ALIASES = {
+    "stock_desc": "stock_tuyo_desc",
+    "stock_asc": "stock_tuyo_asc",
+}
+
+SORTABLE_ITEM_FIELDS = {
+    "producto",
+    "color",
+    "size",
+    "sku_patish",
+    "sku_liverpool",
+    "vgc",
+    "estado",
+    "seller_buybox",
+    "precio_liverpool",
+    "precio_tuyo",
+    "stock_tuyo",
+    "diferencia",
+    "url",
+}
+
+
+def parsear_orden_items(orden):
+    orden_normalizado = SORT_ALIASES.get(limpiar_texto(orden).lower(), limpiar_texto(orden).lower()) or "producto_asc"
+    match = re.fullmatch(r"(.+)_(asc|desc)", orden_normalizado)
+    if not match:
+        return "producto", "asc"
+    campo, direccion = match.groups()
+    if campo not in SORTABLE_ITEM_FIELDS:
+        return "producto", "asc"
+    return campo, direccion
+
+
+def comparar_texto_sort(a, b):
+    texto_a = limpiar_texto(a).lower()
+    texto_b = limpiar_texto(b).lower()
+    if texto_a < texto_b:
+        return -1
+    if texto_a > texto_b:
+        return 1
+    return 0
+
+
+def valor_sort_item(item, campo):
+    if campo == "diferencia":
+        return calcular_diferencia_item(item)
+    if campo == "estado":
+        return ESTADO_ORDEN.get(limpiar_texto(item.get("estado", "")).upper(), 999)
+    if campo in {"precio_liverpool", "precio_tuyo"}:
+        return normalizar_precio(item.get(campo))
+    if campo == "stock_tuyo":
+        return normalizar_entero(item.get(campo))
+    return limpiar_texto(item.get(campo, "")).lower()
+
+
 def ordenar_items_estado(items, orden):
-    orden_normalizado = limpiar_texto(orden).lower() or "producto_asc"
+    campo, direccion = parsear_orden_items(orden)
 
-    if orden_normalizado == "producto_desc":
-        return sorted(
-            items,
-            key=lambda item: str(item.get("producto", "")).lower(),
-            reverse=True,
-        )
+    def comparar_items(a, b):
+        valor_a = valor_sort_item(a, campo)
+        valor_b = valor_sort_item(b, campo)
+        a_vacio = valor_a in (None, "")
+        b_vacio = valor_b in (None, "")
 
-    if orden_normalizado in {"stock_desc", "stock_asc"}:
-        descendente = orden_normalizado.endswith("desc")
+        if a_vacio and not b_vacio:
+            return 1
+        if not a_vacio and b_vacio:
+            return -1
 
-        def llave_stock(item):
-            stock = item.get("stock_tuyo")
-            nombre = str(item.get("producto", "")).lower()
-            if stock is None:
-                return (1, 0, nombre)
-            return (0, -stock if descendente else stock, nombre)
+        resultado = 0
+        if not a_vacio and not b_vacio:
+            if isinstance(valor_a, (int, float)) and isinstance(valor_b, (int, float)):
+                if valor_a < valor_b:
+                    resultado = -1
+                elif valor_a > valor_b:
+                    resultado = 1
+            else:
+                resultado = comparar_texto_sort(valor_a, valor_b)
 
-        return sorted(items, key=llave_stock)
+        if direccion == "desc":
+            resultado *= -1
 
-    if orden_normalizado in {"diferencia_desc", "diferencia_asc"}:
-        descendente = orden_normalizado.endswith("desc")
+        if resultado != 0:
+            return resultado
 
-        def llave_diferencia(item):
-            diferencia = calcular_diferencia_item(item)
-            nombre = str(item.get("producto", "")).lower()
-            if diferencia is None:
-                return (1, 0, nombre)
-            return (0, -diferencia if descendente else diferencia, nombre)
+        resultado = comparar_texto_sort(a.get("producto", ""), b.get("producto", ""))
+        if resultado != 0:
+            return resultado
 
-        return sorted(items, key=llave_diferencia)
+        return comparar_texto_sort(a.get("sku_patish", ""), b.get("sku_patish", ""))
 
-    return sorted(items, key=lambda item: str(item.get("producto", "")).lower())
+    return sorted(items, key=cmp_to_key(comparar_items))
 
 
 @app.route("/")
@@ -1098,7 +1232,7 @@ def guardar_skus_csv(items):
     with open(SKUS_FILE, "w", newline="", encoding="utf-8-sig") as archivo:
         writer = csv.DictWriter(
             archivo,
-            fieldnames=["sku", "url", "tu_nombre_seller", "nombre_producto", "sku_patish"],
+            fieldnames=["sku", "url", "tu_nombre_seller", "nombre_producto", "sku_patish", "vgc"],
         )
         writer.writeheader()
         for item in items:
@@ -1109,6 +1243,7 @@ def guardar_skus_csv(items):
                     "tu_nombre_seller": MY_SELLER,
                     "nombre_producto": item["producto"],
                     "sku_patish": item["sku_patish"],
+                    "vgc": item.get("vgc", ""),
                 }
             )
 
@@ -1806,7 +1941,7 @@ def cargar_catalogo_compatibilidad():
                         "sku_patish": limpiar_texto(row.get("sku_patish", "")),
                         "sku_liverpool": sku_liv,
                         "product_id": product_id,
-                        "vgc": "",
+                        "vgc": normalizar_identificador(row.get("vgc", "")),
                         "producto": limpiar_texto(row.get("nombre_producto", "")),
                         "estado_oferta": "ACTIVA",
                         "motivo": "",
