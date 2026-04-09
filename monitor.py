@@ -55,6 +55,15 @@ PORT = int(os.getenv("PORT", "8080"))
 
 app = Flask(__name__)
 
+# ── Módulo de Ventas (carga opcional: si falla, BuyBox sigue corriendo) ──
+try:
+    from ventas import ventas_bp, init_ventas
+    init_ventas(DATA_DIR, timezone(timedelta(hours=-6)))
+    app.register_blueprint(ventas_bp)
+    print("💰 Módulo Ventas cargado en /ventas")
+except Exception as _ventas_exc:
+    print(f"⚠️  Módulo Ventas no disponible: {_ventas_exc}")
+
 HTML_PANEL = """<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -165,6 +174,10 @@ HTML_PANEL = """<!DOCTYPE html>
       <div class="brand-sub">Monitoreo de BuyBox, stock y variantes</div>
     </div>
   </div>
+  <nav style="display:flex;gap:4px;margin-left:18px">
+    <a href="/" style="font-family:'Space Mono',monospace;font-size:.68rem;padding:7px 16px;border-radius:999px;border:1px solid var(--accent);background:linear-gradient(180deg,var(--accent),var(--accent-2));color:#fff;text-decoration:none;box-shadow:0 8px 20px rgba(20,122,84,.18)">BuyBox</a>
+    <a href="/ventas" style="font-family:'Space Mono',monospace;font-size:.68rem;padding:7px 16px;border-radius:999px;border:1px solid rgba(217,209,194,.9);background:rgba(255,255,255,.7);color:#7a8178;text-decoration:none">Ventas</a>
+  </nav>
   <span class="tag">PATISH · Liverpool MX · variantes</span>
 </header>
 
