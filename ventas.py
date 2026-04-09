@@ -629,8 +629,14 @@ def _parse_liverpool(excel_bytes: bytes, source_file: str) -> list:
 # SINCRONIZACIÓN
 # ═══════════════════════════════════════════════════════════════════════════
 
-def sincronizar_ventas() -> dict:
-    """Descarga ambos Excel, parsea e inserta en SQLite. Idempotente por raw_hash."""
+def sincronizar_ventas(cred_url_override: str = None, liv_url_override: str = None) -> dict:
+    """
+    Descarga ambos Excel, parsea e inserta en SQLite. Idempotente por raw_hash.
+    Si se pasan cred_url_override / liv_url_override se usan directamente
+    (el script local sync_ventas.py los resuelve y los envía al servidor).
+    Fallback: env vars CREDITIENDA_FILEGETURL / LIVERPOOL_FILEGETURL.
+    Último fallback: intenta resolver el share link desde el propio servidor.
+    """
     resultado = {
         "ok":          False,
         "creditienda": {},
@@ -639,9 +645,11 @@ def sincronizar_ventas() -> dict:
     }
 
     # ── Creditienda ──────────────────────────────────────────────────────
-    cred_env = os.getenv("CREDITIENDA_FILEGETURL", "").strip() or None
-    print("  Resolviendo URL Creditienda...")
-    cred_url = _resolve_onedrive(CREDITIENDA_SHARE_URL, cred_env)
+    cred_url = (
+        cred_url_override
+        or os.getenv("CREDITIENDA_FILEGETURL", "").strip()
+        or _resolve_onedrive(CREDITIENDA_SHARE_URL)
+    )
     if cred_url:
         print("  Descargando Creditienda...")
         cred_bytes = _download_excel(cred_url)
@@ -654,14 +662,16 @@ def sincronizar_ventas() -> dict:
             resultado["creditienda"] = {"ok": False, "error": msg}
             resultado["errores"].append(msg)
     else:
-        msg = "No se pudo resolver URL de Creditienda (prueba CREDITIENDA_FILEGETURL)"
+        msg = "No se pudo resolver URL de Creditienda"
         resultado["creditienda"] = {"ok": False, "error": msg}
         resultado["errores"].append(msg)
 
     # ── Liverpool ─────────────────────────────────────────────────────────
-    liv_env = os.getenv("LIVERPOOL_FILEGETURL", "").strip() or None
-    print("  Resolviendo URL Liverpool...")
-    liv_url = _resolve_onedrive(LIVERPOOL_SHARE_URL, liv_env)
+    liv_url = (
+        liv_url_override
+        or os.getenv("LIVERPOOL_FILEGETURL", "").strip()
+        or _resolve_onedrive(LIVERPOOL_SHARE_URL)
+    )
     if liv_url:
         print("  Descargando Liverpool...")
         liv_bytes = _download_excel(liv_url)
@@ -674,7 +684,7 @@ def sincronizar_ventas() -> dict:
             resultado["liverpool"] = {"ok": False, "error": msg}
             resultado["errores"].append(msg)
     else:
-        msg = "No se pudo resolver URL de Liverpool (prueba LIVERPOOL_FILEGETURL)"
+        msg = "No se pudo resolver URL de Liverpool"
         resultado["liverpool"] = {"ok": False, "error": msg}
         resultado["errores"].append(msg)
 
@@ -813,7 +823,10 @@ def ventas_panel():
 @ventas_bp.route("/api/ventas/sync", methods=["POST"])
 def api_ventas_sync():
     try:
-        result = sincronizar_ventas()
+        body = request.get_json(silent=True) or {}
+        cred_url = body.get("creditienda_url", "").strip() or None
+        liv_url  = body.get("liverpool_url",  "").strip() or None
+        result = sincronizar_ventas(cred_url, liv_url)
         return jsonify(result)
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
