@@ -2,6 +2,7 @@
 ventas.py — Módulo de Ventas para Liverpool BuyBox Monitor
 Agrega rutas /ventas y /api/ventas/* a la app Flask existente sin tocar BuyBox.
 """
+import base64
 import calendar
 import hashlib
 import io
@@ -9,6 +10,8 @@ import json
 import os
 import re
 import sqlite3
+import threading
+import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional, Tuple
@@ -53,6 +56,10 @@ def init_ventas(data_dir: str, cdmx_tz=None):
     os.makedirs(_DATA_DIR, exist_ok=True)
     _init_db()
     print(f"💰 Ventas DB: {_DB_FILE}")
+    # Auto-sync en background cada 6 horas
+    t = threading.Thread(target=_loop_auto_sync, daemon=True)
+    t.start()
+    print("💰 Ventas auto-sync: cada 6 horas")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -272,51 +279,103 @@ def _insert_records(records: list, source_file: str) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# AUTO-SYNC BACKGROUND
+# ═══════════════════════════════════════════════════════════════════════════
+
+SYNC_INTERVAL_HORAS = int(os.getenv("VENTAS_SYNC_HORAS", "6"))
+_ultimo_auto_sync: float = 0.0
+
+
+def _loop_auto_sync():
+    """Hilo daemon: sincroniza ventas cada SYNC_INTERVAL_HORAS horas."""
+    global _ultimo_auto_sync
+    # Primer sync: espera 60s para que la app termine de arrancar
+    time.sleep(60)
+    while True:
+        ahora = time.time()
+        if ahora - _ultimo_auto_sync >= SYNC_INTERVAL_HORAS * 3600:
+            print(f"💰 Auto-sync ventas iniciado ({SYNC_INTERVAL_HORAS}h interval)...")
+            try:
+                r = sincronizar_ventas()
+                cred = r.get("creditienda", {})
+                liv  = r.get("liverpool",   {})
+                print(f"💰 Auto-sync OK — CT: {cred.get('insertados',0)} nuevos | LV: {liv.get('insertados',0)} nuevos")
+            except Exception as exc:
+                print(f"💰 Auto-sync error: {exc}")
+            _ultimo_auto_sync = time.time()
+        time.sleep(300)  # revisa cada 5 minutos
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # ONEDRIVE — RESOLUCIÓN Y DESCARGA
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _resolve_onedrive(share_url: str, env_override: str = None) -> Optional[str]:
-    """Resuelve share link de OneDrive a URL de descarga directa."""
+    """
+    Resuelve share link de OneDrive a URL de descarga directa que NO expira.
+
+    Método principal (funciona desde cualquier servidor incluido Railway):
+      1. Seguir el redirect de 1drv.ms → obtener URL de onedrive.live.com
+      2. Agregar ?download=1&e={authkey} → descarga directa estable
+
+    Fallback: scraping HTML (solo funciona desde IPs no bloqueadas por MS).
+    """
     if env_override:
         return env_override
 
+    # ── Método principal: redirect + download=1 ───────────────────────────
     try:
-        resp = requests.get(
-            share_url,
-            headers=_HEADERS_HTTP,
-            timeout=30,
-            allow_redirects=True,
-        )
-        if resp.status_code != 200:
-            print(f"  OneDrive HTTP {resp.status_code}: {share_url[:70]}")
-            return None
+        m_e = re.search(r"[?&]e=([^&]+)", share_url)
+        authkey = m_e.group(1) if m_e else ""
 
-        html = resp.text
+        r1 = requests.get(share_url, headers=_HEADERS_HTTP, timeout=20, allow_redirects=False)
+        loc = r1.headers.get("Location", "")
 
-        # Patrones para extraer URL de descarga del HTML de OneDrive
-        patrones = [
-            r'"FileGetUrl"\s*:\s*"([^"]+)"',
-            r'"downloadUrl"\s*:\s*"([^"]+)"',
-            r'"DownloadUrl"\s*:\s*"([^"]+)"',
-        ]
-        for pat in patrones:
-            m = re.search(pat, html)
-            if m:
-                url = m.group(1).replace("\\u0026", "&").replace("\\/", "/")
-                return url
+        if loc and "onedrive.live.com" in loc:
+            # Quitar query string existente y agregar download=1
+            base = loc.split("?")[0]
+            dl_url = f"{base}?e={authkey}&download=1"
+            # Verificar que devuelve un Excel
+            head = requests.head(dl_url, headers=_HEADERS_HTTP, timeout=15, allow_redirects=True)
+            ct = head.headers.get("Content-Type", "")
+            if head.status_code == 200 and ("spreadsheet" in ct or "excel" in ct or "octet" in ct):
+                print(f"  OneDrive → OK (redirect+download)")
+                return dl_url
+            # A veces el HEAD no trae Content-Type pero el GET sí funciona
+            if head.status_code == 200:
+                print(f"  OneDrive → OK (redirect+download, sin CT)")
+                return dl_url
 
-        print(f"  OneDrive: no se encontró FileGetUrl en HTML ({share_url[:70]})")
-        return None
-
+        print(f"  OneDrive redirect: {r1.status_code} → {loc[:80]}")
     except Exception as exc:
-        print(f"  OneDrive resolve error: {exc}")
-        return None
+        print(f"  OneDrive redirect error: {exc}")
+
+    # ── Fallback: scraping HTML ───────────────────────────────────────────
+    try:
+        resp = requests.get(share_url, headers=_HEADERS_HTTP, timeout=30, allow_redirects=True)
+        if resp.status_code == 200:
+            for pat in [r'"FileGetUrl"\s*:\s*"([^"]+)"', r'"downloadUrl"\s*:\s*"([^"]+)"']:
+                m = re.search(pat, resp.text)
+                if m:
+                    url = m.group(1).replace("\\u0026", "&").replace("\\/", "/")
+                    print(f"  OneDrive scraping → OK")
+                    return url
+        print(f"  OneDrive: todos los métodos fallaron (HTTP {resp.status_code})")
+    except Exception as exc:
+        print(f"  OneDrive scraping error: {exc}")
+
+    return None
 
 
 def _download_excel(url: str) -> Optional[bytes]:
     try:
-        resp = requests.get(url, headers=_HEADERS_HTTP, timeout=60)
+        resp = requests.get(url, headers=_HEADERS_HTTP, timeout=90, allow_redirects=True)
         if resp.status_code == 200:
+            # Verificar que es un Excel real
+            ct = resp.headers.get("Content-Type", "")
+            if len(resp.content) < 1000:
+                print(f"  Descarga: respuesta muy pequeña ({len(resp.content)} bytes), posible error")
+                return None
             return resp.content
         print(f"  Descarga HTTP {resp.status_code}")
         return None
