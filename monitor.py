@@ -24,7 +24,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 MY_SELLER = os.getenv("MY_SELLER", "PATISH").strip()
 MY_SELLER_ID = os.getenv("MY_SELLER_ID", "2370").strip()
 DATA_DIR = os.getenv("DATA_DIR") or os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or "."
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "8"))
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", "3"))
 CSV_MAX_DIAS = int(os.getenv("CSV_MAX_DIAS", "30"))
 
 HEADERS = {
@@ -37,6 +37,31 @@ HEADERS = {
 }
 
 CDMX_TZ = timezone(timedelta(hours=-6))
+
+# Sesión HTTP con cookies de Akamai (se renueva automáticamente si expira)
+_SESSION = requests.Session()
+_SESSION.headers.update({
+    "User-Agent": HEADERS["User-Agent"],
+    "Accept-Language": "es-MX,es;q=0.9",
+})
+_SESSION_LOCK = threading.Lock()
+_SESSION_COOKIES_AT = 0
+_SESSION_COOKIE_TTL = 1800  # renovar cada 30 min
+
+
+def _asegurar_cookies():
+    """Obtiene cookies de Akamai si no existen o expiraron."""
+    global _SESSION_COOKIES_AT
+    now = time.time()
+    with _SESSION_LOCK:
+        if now - _SESSION_COOKIES_AT < _SESSION_COOKIE_TTL:
+            return
+        try:
+            _SESSION.get("https://www.liverpool.com.mx/tienda/", timeout=15)
+            _SESSION_COOKIES_AT = now
+            print("🍪 Cookies Akamai renovadas")
+        except Exception as exc:
+            print(f"⚠️ No se pudieron obtener cookies: {exc}")
 
 ULTIMO_ESTADO = {}
 ULTIMO_PRECIO = {}
@@ -1579,101 +1604,127 @@ def limpiar_estado_item(sku, estado):
 # PROCESAMIENTO PARALELO
 # ================================
 
+def _api_get(url):
+    """GET autenticado con sesión de cookies. Un reintento si 403 (renueva cookies)."""
+    _asegurar_cookies()
+    hdrs = {
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://www.liverpool.com.mx/tienda/",
+        "Origin": "https://www.liverpool.com.mx",
+    }
+    for intento in range(2):
+        try:
+            r = _SESSION.get(url, headers=hdrs, timeout=15)
+            if r.status_code == 200:
+                return r
+            if r.status_code == 403 and intento == 0:
+                global _SESSION_COOKIES_AT
+                _SESSION_COOKIES_AT = 0
+                _asegurar_cookies()
+                time.sleep(1)
+                continue
+            return r
+        except Exception as exc:
+            if intento == 0:
+                time.sleep(1)
+                continue
+            print(f"  Error HTTP: {exc}")
+    return None
+
+
+def _fetch_alloffers_api(product_id):
+    """Llama a la API de Liverpool para obtener el mejor seller por SKU del producto."""
+    url = f"https://www.liverpool.com.mx/tienda/browse/marketplace/products/allOffers?productId={product_id}"
+    r = _api_get(url)
+    if not r or r.status_code != 200:
+        if r:
+            print(f"  HTTP {r.status_code} allOffers {product_id}")
+        return {}
+    try:
+        data = r.json()
+        result = {}
+        for offer in data.get("skuOffers", []):
+            sku_id = normalizar_identificador(str(offer.get("skuId", "")))
+            if sku_id:
+                result[sku_id] = offer
+        return result
+    except Exception as exc:
+        print(f"  Error parsing allOffers {product_id}: {exc}")
+        return {}
+
+
+def _fetch_offers_listing(sku_liverpool):
+    """Obtiene todos los sellers activos para un SKU (para distinguir PERDIDO vs NO_PRENDIDA)."""
+    url = f"https://www.liverpool.com.mx/tienda/browse/marketplace/skus/offersListing?skuId={sku_liverpool}"
+    r = _api_get(url)
+    if not r or r.status_code != 200:
+        return []
+    try:
+        return r.json().get("sellersOfferDetails", [])
+    except Exception:
+        return []
+
+
 def _procesar_grupo_producto(product_id, items_grupo):
-    """Descarga y procesa un grupo de variantes del mismo producto. Thread-safe."""
-    url_base = items_grupo[0]["url"]
-    html_text = obtener_html(url_base)
-
-    data = extraer_next_data(html_text)
-    variantes = extraer_variantes(data)
-    mapa = {v["skuId"]: v for v in variantes if v.get("skuId")}
-
-    slugs = [s for s in find_deep(data, "slug") if isinstance(s, str) and s] if data else []
-    slug = slugs[0] if slugs else None
-    data = None  # liberar RAM
-
-    # Fallback legacy: extraer una sola vez para todo el grupo
-    legacy_extraido = False
-    legacy_seller = None
-    legacy_price = None
-    legacy_alternativos = []
+    """Obtiene datos de buybox via API y procesa cada variante. Thread-safe."""
+    alloffers_mapa = _fetch_alloffers_api(product_id)
 
     resultados = []
     for item in items_grupo:
         sku_liverpool = normalizar_identificador(item["sku_liverpool"])
-        variante_data = mapa.get(sku_liverpool)
+        offer_data = alloffers_mapa.get(sku_liverpool)
 
-        color_nuevo = variante_data.get("color", "") if variante_data else ""
-        size_nuevo = variante_data.get("size", "") if variante_data else ""
-        url_nuevo = (
-            f"https://www.liverpool.com.mx/tienda/pdp/{slug}/{product_id}?skuid={item['sku_liverpool']}"
-            if slug else None
-        )
-
-        if not variante_data:
-            if not legacy_extraido:
-                legacy_seller, legacy_price, legacy_alternativos = extraer_buybox_legacy(html_text)
-                legacy_extraido = True
-            if not legacy_seller:
-                resultados.append({
-                    "item": item, "sku_patish": item["sku_patish"],
-                    "nuevo_estado": "SIN_DATOS", "seller": "", "price": "",
-                    "otros": [], "precio_mio": "", "stock_mio": None,
-                    "color_nuevo": color_nuevo, "size_nuevo": size_nuevo, "url_nuevo": url_nuevo,
-                })
-                continue
-            variante_data = {
-                "buybox": {"seller": legacy_seller, "sellerId": "", "precio": formatear_precio(legacy_price)},
-                "precio_liverpool": formatear_precio(legacy_price),
-                "offers": [],
-                "otros_sellers": [{"seller": a["seller"], "precio": formatear_precio(a["precio"])} for a in legacy_alternativos],
-                "hasValidOnlineInventory": "true",
-            }
-
-        buybox = variante_data.get("buybox")
-        offers = [o for o in variante_data.get("offers", []) if o.get("seller")]
-        otros = variante_data.get("otros_sellers", [])
-        precio_liverpool = formatear_precio(variante_data.get("precio_liverpool"))
-
-        if not buybox or not buybox.get("seller"):
+        if not offer_data:
             resultados.append({
                 "item": item, "sku_patish": item["sku_patish"],
-                "nuevo_estado": "INACTIVA_STOCK", "seller": "", "price": "",
+                "nuevo_estado": "SIN_DATOS", "seller": "", "price": "",
                 "otros": [], "precio_mio": "", "stock_mio": None,
-                "color_nuevo": color_nuevo, "size_nuevo": size_nuevo, "url_nuevo": url_nuevo,
+                "color_nuevo": "", "size_nuevo": "", "url_nuevo": None,
             })
             continue
 
-        seller = limpiar_texto(buybox.get("seller"))
-        price = precio_liverpool or formatear_precio(buybox.get("precio"))
-        seller_id = normalizar_identificador(buybox.get("sellerId"))
-        es_mio = es_seller_mio(seller, seller_id)
-
-        mi_oferta = next((o for o in offers if es_seller_mio(o.get("seller"), o.get("sellerId"))), None)
-        precio_mio = mi_oferta.get("precio", "") if mi_oferta else ""
-        stock_mio = mi_oferta.get("stock") if mi_oferta else None
-        if es_mio and not precio_mio:
-            precio_mio = price
-        if stock_mio is None:
-            stock_mio = normalizar_entero(item.get("cantidad"))
+        best_seller = limpiar_texto(offer_data.get("bestSeller", ""))
+        seller_id = normalizar_identificador(str(offer_data.get("sellerId", "")))
+        price = formatear_precio(offer_data.get("bestSalePrice", ""))
+        sellers_count = offer_data.get("sellersCount", 0)
+        es_mio = es_seller_mio(best_seller, seller_id)
 
         if es_mio:
             nuevo_estado = "GANANDO"
-        elif mi_oferta:
-            nuevo_estado = "PERDIDO"
-        elif offers:
-            nuevo_estado = "NO_PRENDIDA"
+            precio_mio = price
+            stock_mio = normalizar_entero(item.get("cantidad"))
+            otros = []
         else:
-            nuevo_estado = "PERDIDO"
+            otros = []
+            precio_mio = ""
+            stock_mio = None
+            tiene_mi_oferta = False
+
+            if sellers_count > 1:
+                all_sellers = _fetch_offers_listing(sku_liverpool)
+                for s in all_sellers:
+                    s_name = limpiar_texto(s.get("sellerName", ""))
+                    s_id = normalizar_identificador(str(s.get("sellerId", "")))
+                    if es_seller_mio(s_name, s_id):
+                        tiene_mi_oferta = True
+                        precio_mio = formatear_precio(s.get("salePrice", ""))
+                    else:
+                        otros.append({"seller": s_name, "precio": formatear_precio(s.get("salePrice", ""))})
+
+            if tiene_mi_oferta:
+                nuevo_estado = "PERDIDO"
+            elif sellers_count > 0:
+                nuevo_estado = "NO_PRENDIDA"
+            else:
+                nuevo_estado = "PERDIDO"
 
         resultados.append({
             "item": item, "sku_patish": item["sku_patish"],
-            "nuevo_estado": nuevo_estado, "seller": seller, "price": price,
-            "otros": otros, "precio_mio": precio_mio, "stock_mio": stock_mio,
-            "color_nuevo": color_nuevo, "size_nuevo": size_nuevo, "url_nuevo": url_nuevo,
+            "nuevo_estado": nuevo_estado, "seller": best_seller, "price": price,
+            "otros": otros[:4], "precio_mio": precio_mio, "stock_mio": stock_mio,
+            "color_nuevo": "", "size_nuevo": "", "url_nuevo": None,
         })
 
-    html_text = None  # liberar RAM
     return resultados
 
 
@@ -1709,19 +1760,26 @@ def monitorear():
         if item["estado_oferta"] == "ACTIVA":
             productos_agrupados[item["product_id"]].append(item)
 
-    # Procesar en paralelo
+    # Procesar en paralelo con pausa entre lotes para no saturar el API
+    LOTE_SIZE = MAX_WORKERS
+    PAUSA_ENTRE_LOTES = float(os.getenv("PAUSA_LOTES", "1.0"))
+    grupos_lista = list(productos_agrupados.items())
     todos_resultados = []
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {
-            executor.submit(_procesar_grupo_producto, pid, grupo): pid
-            for pid, grupo in productos_agrupados.items()
-        }
-        for future in as_completed(futures):
-            pid = futures[future]
-            try:
-                todos_resultados.extend(future.result())
-            except Exception as exc:
-                print(f"  💥 Error procesando {pid}: {exc}")
+    for i in range(0, len(grupos_lista), LOTE_SIZE):
+        lote = grupos_lista[i:i + LOTE_SIZE]
+        with ThreadPoolExecutor(max_workers=len(lote)) as executor:
+            futures = {
+                executor.submit(_procesar_grupo_producto, pid, grupo): pid
+                for pid, grupo in lote
+            }
+            for future in as_completed(futures):
+                pid = futures[future]
+                try:
+                    todos_resultados.extend(future.result())
+                except Exception as exc:
+                    print(f"  💥 Error procesando {pid}: {exc}")
+        if i + LOTE_SIZE < len(grupos_lista):
+            time.sleep(PAUSA_ENTRE_LOTES)
 
     # Aplicar resultados secuencialmente
     for r in todos_resultados:
@@ -1778,11 +1836,15 @@ def monitorear():
                 f"{escapar(item['url'])}"
             )
 
-        ULTIMO_ESTADO[sku_patish] = nuevo_estado
-        ULTIMO_PRECIO[sku_patish] = price
-        ULTIMO_SELLER[sku_patish] = seller
-        ULTIMO_PRECIO_PATISH[sku_patish] = r["precio_mio"]
-        ULTIMO_STOCK_PATISH[sku_patish] = r["stock_mio"]
+        # No sobreescribir estado bueno con SIN_DATOS (fallo de API transitorio)
+        estado_bueno = ULTIMO_ESTADO.get(sku_patish) in ("GANANDO", "PERDIDO", "NO_PRENDIDA")
+        if nuevo_estado != "SIN_DATOS" or not estado_bueno:
+            ULTIMO_ESTADO[sku_patish] = nuevo_estado
+        if nuevo_estado != "SIN_DATOS":
+            ULTIMO_PRECIO[sku_patish] = price
+            ULTIMO_SELLER[sku_patish] = seller
+            ULTIMO_PRECIO_PATISH[sku_patish] = r["precio_mio"]
+            ULTIMO_STOCK_PATISH[sku_patish] = r["stock_mio"]
 
     # Resumen cada 15 min
     if time.time() - ULTIMO_RESUMEN >= 900:
