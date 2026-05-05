@@ -1,3 +1,9 @@
 __pycache__/
 catalogo_activo.json
 historico_buybox.csv
+.env
+catalogo_sync_debug.bin
+catalogo_sync_ultimo.xlsx
+estado_persistido.json
+ventas_monitor.db
+precios_minimos.json

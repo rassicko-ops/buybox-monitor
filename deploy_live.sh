@@ -7,18 +7,18 @@ cd "$ROOT_DIR"
 BRANCH="${BRANCH:-main}"
 REMOTE="${REMOTE:-origin}"
 LIVE_URL="${LIVE_URL:-}"
-DEFAULT_MESSAGE="panel pro + vgc persistido + sort por columnas"
+DEFAULT_MESSAGE="buybox verificado + vgc variantes + catalogo auto-sync"
 COMMIT_MESSAGE="${1:-$DEFAULT_MESSAGE}"
 
 echo "==> Repo: $ROOT_DIR"
 echo "==> Revisando cambios..."
 git status --short --branch
 
-if ! git diff --quiet -- monitor.py ventas.py skus.csv deploy_live.sh || ! git diff --cached --quiet -- monitor.py ventas.py skus.csv deploy_live.sh; then
+if ! git diff --quiet -- monitor.py ventas.py skus.csv deploy_live.sh .gitignore || ! git diff --cached --quiet -- monitor.py ventas.py skus.csv deploy_live.sh .gitignore; then
   echo "==> Agregando archivos del deploy..."
-  git add monitor.py ventas.py skus.csv deploy_live.sh
+  git add monitor.py ventas.py skus.csv deploy_live.sh .gitignore
 else
-  echo "==> No hay cambios nuevos en monitor.py, ventas.py, skus.csv o deploy_live.sh"
+  echo "==> No hay cambios nuevos en monitor.py, ventas.py, skus.csv, deploy_live.sh o .gitignore"
 fi
 
 if git diff --cached --quiet; then
