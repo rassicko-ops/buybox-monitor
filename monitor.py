@@ -58,6 +58,7 @@ CATALOGO_AUTH_BEARER = os.getenv("CATALOGO_AUTH_BEARER", "").strip()
 CATALOGO_SYNC_INTERVAL_HOURS = float(os.getenv("CATALOGO_SYNC_INTERVAL_HOURS", "24"))
 CATALOGO_SYNC_ON_START = os.getenv("CATALOGO_SYNC_ON_START", "").strip().lower() in {"1", "true", "yes", "si"}
 CATALOGO_TOKEN_ALERT_INTERVAL_HOURS = float(os.getenv("CATALOGO_TOKEN_ALERT_INTERVAL_HOURS", "6"))
+PANEL_SECRET = os.getenv("PANEL_SECRET", "").strip()
 REPRICER_STEP = float(os.getenv("REPRICER_STEP", "1"))
 
 HEADERS = {
@@ -144,6 +145,7 @@ ESTADO_FILE = os.path.join(DATA_DIR, "estado_persistido.json")
 CATALOGO_SYNC_EXCEL_FILE = os.path.join(DATA_DIR, "catalogo_sync_ultimo.xlsx")
 PRECIOS_MINIMOS_FILE = os.path.join(DATA_DIR, "precios_minimos.json")
 VENTAS_DB_FILE = os.path.join(DATA_DIR, "ventas_monitor.db")
+CATALOGO_TOKEN_FILE = os.path.join(DATA_DIR, "catalogo_auth.json")
 PORT = int(os.getenv("PORT", "8080"))
 
 app = Flask(__name__)
@@ -281,7 +283,10 @@ tbody td{padding:11px 14px;border-bottom:1px solid #f1f5f9;vertical-align:middle
 tbody tr:last-child td{border-bottom:none}
 tbody tr:hover td{background:#f0fdf9}
 .prod-cell{min-width:360px;max-width:560px;white-space:normal;line-height:1.35}
-.sku-cell{font-size:11px;color:var(--muted);min-width:110px}
+.sku-cell{font-size:11px;color:var(--muted);min-width:110px;cursor:pointer}
+.sku-cell:hover{color:var(--primary-dark);text-decoration:underline dotted}
+#copy-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:#1e293b;color:#fff;padding:6px 16px;border-radius:999px;font-size:12px;opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;z-index:9999}
+#copy-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .sortable{cursor:pointer;user-select:none}
 .sortable:hover{color:var(--primary-dark)}
 .sarr{font-size:10px;color:#cbd5e1;margin-left:3px}
@@ -328,6 +333,7 @@ a.lnk:hover{color:var(--primary)}
 </style>
 </head>
 <body>
+<div id="copy-toast"></div>
 
 <header>
   <div class="logo">
@@ -395,6 +401,7 @@ a.lnk:hover{color:var(--primary)}
       <div class="umsg" id="msg-upload"></div>
       <div class="umsg" id="msg-minimos"></div>
       <div class="sync-meta" id="catalog-sync-status">Catálogo automático: cargando estado...</div>
+      <div style="margin-top:8px"><a href="/admin/token" target="_blank" rel="noreferrer" style="font-size:12px;color:#0ea5e9;text-decoration:none">🔑 Renovar token Liverpool</a></div>
     </div>
   </div>
 
@@ -496,6 +503,17 @@ a.lnk:hover{color:var(--primary)}
 </div>
 
 <script>
+let _copyToastTimer=null;
+function copiarCelda(texto){
+  if(!texto||texto==='-')return;
+  navigator.clipboard.writeText(texto).then(()=>{
+    const t=document.getElementById('copy-toast');
+    t.textContent=`Copiado: ${texto}`;
+    t.classList.add('show');
+    clearTimeout(_copyToastTimer);
+    _copyToastTimer=setTimeout(()=>t.classList.remove('show'),1800);
+  }).catch(()=>{});
+}
 const DEFAULT_COLUMN_FILTERS={
   producto:'',sku_patish:'',sku_liverpool:'',vgc:'',
   estado:'',seller_buybox:'',precio_liverpool:'',precio_tuyo:'',stock_tuyo:'',diferencia:'',url:'',
@@ -1146,9 +1164,9 @@ function renderTabla(){
     const prioridad=prioridadBadge(p);
     const row=`<tr>
       <td class="prod-cell" title="${escapeHtml(p.producto)}">${escapeHtml(p.producto)} ${groupInfo}<br>${vgcChip} ${prioridad}</td>
-      <td class="sku-cell">${escapeHtml(p.sku_patish)}</td>
-      <td class="sku-cell">${escapeHtml(p.sku_liverpool)}</td>
-      <td class="sku-cell">${escapeHtml(p.vgc||'-')}</td>
+      <td class="sku-cell" title="Click para copiar" onclick="copiarCelda('${escapeHtml(p.sku_patish)}')">${escapeHtml(p.sku_patish)}</td>
+      <td class="sku-cell" title="Click para copiar" onclick="copiarCelda('${escapeHtml(p.sku_liverpool)}')">${escapeHtml(p.sku_liverpool)}</td>
+      <td class="sku-cell" title="Click para copiar" onclick="copiarCelda('${escapeHtml(p.vgc||'')}')">${escapeHtml(p.vgc||'-')}</td>
       <td>${estadoBadge(p.estado)}<br>${fuenteBadge(p)}</td>
       <td>${escapeHtml(p.seller_buybox||'-')}</td>
       <td>${p.precio_liverpool?'$'+escapeHtml(String(p.precio_liverpool)):'-'}</td>
@@ -1534,6 +1552,21 @@ def aplicar_catalogo_nuevo(nuevos, source="manual"):
     }
 
 
+def leer_token_persistido():
+    try:
+        with open(CATALOGO_TOKEN_FILE, "r") as f:
+            data = json.load(f)
+        return data.get("bearer", "").strip()
+    except Exception:
+        return ""
+
+
+def guardar_token_persistido(bearer):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(CATALOGO_TOKEN_FILE, "w") as f:
+        json.dump({"bearer": bearer, "guardado_at": datetime.now(CDMX_TZ).strftime("%Y-%m-%d %H:%M:%S")}, f)
+
+
 def descargar_catalogo_excel():
     if not CATALOGO_EXCEL_URL:
         raise RuntimeError("Falta CATALOGO_EXCEL_URL")
@@ -1545,8 +1578,8 @@ def descargar_catalogo_excel():
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
     }
-    if CATALOGO_AUTH_BEARER:
-        token = CATALOGO_AUTH_BEARER
+    token = leer_token_persistido() or CATALOGO_AUTH_BEARER
+    if token:
         headers["Authorization"] = token if token.lower().startswith("bearer ") else f"Bearer {token}"
     respuesta = requests.get(CATALOGO_EXCEL_URL, headers=headers, timeout=90, allow_redirects=True)
     respuesta.raise_for_status()
@@ -1635,10 +1668,11 @@ def alertar_token_catalogo_expirado(exc):
     if CATALOGO_TOKEN_ALERT_LAST_TS and ahora - CATALOGO_TOKEN_ALERT_LAST_TS < intervalo:
         return
     CATALOGO_TOKEN_ALERT_LAST_TS = ahora
+    panel_link = " Renuévalo en el panel: /admin/token" if PANEL_SECRET else " Renueva CATALOGO_AUTH_BEARER en Railway."
     enviar_telegram(
         "⚠️ <b>Token de Liverpool vencido</b>\n\n"
         "No pude actualizar el catálogo automático desde Marketplace.\n"
-        "Renueva <b>CATALOGO_AUTH_BEARER</b> en Railway/local y vuelve a correr el sync.\n\n"
+        f"{panel_link}\n\n"
         f"Error: {escapar(str(exc)[:220])}"
     )
 
@@ -2137,7 +2171,8 @@ def api_catalogo_sync():
 def api_catalogo_sync_status():
     return jsonify({
         "configured": bool(CATALOGO_EXCEL_URL),
-        "auth_configured": bool(CATALOGO_AUTH_BEARER),
+        "auth_configured": bool(leer_token_persistido() or CATALOGO_AUTH_BEARER),
+        "token_source": "persistido" if leer_token_persistido() else ("env" if CATALOGO_AUTH_BEARER else "ninguno"),
         "interval_hours": CATALOGO_SYNC_INTERVAL_HOURS,
         "download_available": os.path.exists(CATALOGO_SYNC_EXCEL_FILE),
         **CATALOGO_SYNC_STATE,
@@ -2359,6 +2394,99 @@ def api_exportar_acciones():
     salida.seek(0)
     return send_file(salida, as_attachment=True, download_name=nombre_archivo,
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+HTML_ADMIN_TOKEN = """<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Renovar token Liverpool</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f1f5f9;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.card{background:#fff;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,.08);padding:32px;max-width:520px;width:100%}
+h1{font-size:18px;font-weight:700;color:#0f172a;margin-bottom:6px}
+p{font-size:13px;color:#64748b;margin-bottom:20px;line-height:1.5}
+label{font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:6px}
+textarea{width:100%;min-height:130px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;font-size:12px;font-family:monospace;resize:vertical;outline:none}
+textarea:focus{border-color:#0ea5e9;box-shadow:0 0 0 3px rgba(14,165,233,.15)}
+.row{display:flex;gap:10px;margin-top:16px;align-items:center}
+input[type=password]{flex:1;padding:9px 12px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;outline:none}
+input[type=password]:focus{border-color:#0ea5e9;box-shadow:0 0 0 3px rgba(14,165,233,.15)}
+button{background:#0ea5e9;color:#fff;border:none;border-radius:8px;padding:10px 22px;font-size:14px;font-weight:600;cursor:pointer}
+button:hover{background:#0284c7}
+.msg{margin-top:16px;padding:10px 14px;border-radius:8px;font-size:13px;display:none}
+.msg.ok{background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;display:block}
+.msg.err{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;display:block}
+.hint{font-size:11px;color:#94a3b8;margin-top:8px}
+.current{margin-top:20px;padding:10px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;font-size:12px;color:#475569}
+</style></head>
+<body>
+<div class="card">
+  <h1>🔑 Renovar token Liverpool</h1>
+  <p>Pega aquí el Bearer token que copiaste de DevTools en Marketplace Liverpool. El monitor lo usará de inmediato sin necesidad de reiniciar.</p>
+  <label>Nuevo Bearer token</label>
+  <textarea id="token" placeholder="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."></textarea>
+  <p class="hint">Puedes pegar el token completo con o sin el prefijo "Bearer ".</p>
+  <div class="row">
+    <input type="password" id="secret" placeholder="PANEL_SECRET">
+    <button onclick="guardar()">Guardar</button>
+  </div>
+  <div id="msg" class="msg"></div>
+  <div class="current">{{ estado_actual }}</div>
+</div>
+<script>
+async function guardar(){
+  const token=document.getElementById('token').value.trim();
+  const secret=document.getElementById('secret').value.trim();
+  const msg=document.getElementById('msg');
+  msg.className='msg';msg.textContent='';
+  if(!token){msg.className='msg err';msg.textContent='Pega el token primero.';return;}
+  if(!secret){msg.className='msg err';msg.textContent='Ingresa el PANEL_SECRET.';return;}
+  try{
+    const r=await fetch('/admin/token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bearer:token,secret})});
+    const d=await r.json();
+    if(d.ok){msg.className='msg ok';msg.textContent='Token guardado. El próximo sync usará este token.';}
+    else{msg.className='msg err';msg.textContent=d.error||'Error desconocido.';}
+  }catch(e){msg.className='msg err';msg.textContent='Error de red: '+e;}
+}
+</script>
+</body></html>"""
+
+
+@app.route("/admin/token", methods=["GET"])
+def admin_token_get():
+    if not PANEL_SECRET:
+        return "PANEL_SECRET no configurado en Railway. Agrega esa variable de entorno primero.", 503
+    token_actual = leer_token_persistido()
+    if token_actual:
+        preview = token_actual[:16] + "..." + token_actual[-8:]
+        estado = f"Token persistido activo: {preview}"
+    elif CATALOGO_AUTH_BEARER:
+        estado = "Usando token de variable de entorno CATALOGO_AUTH_BEARER (sin token persistido guardado aún)"
+    else:
+        estado = "Sin token configurado — el sync del catálogo fallará con 401"
+    html = HTML_ADMIN_TOKEN.replace("{{ estado_actual }}", estado)
+    return html
+
+
+@app.route("/admin/token", methods=["POST"])
+def admin_token_post():
+    if not PANEL_SECRET:
+        return jsonify({"ok": False, "error": "PANEL_SECRET no configurado en Railway"}), 503
+    try:
+        data = request.get_json(force=True) or {}
+    except Exception:
+        return jsonify({"ok": False, "error": "JSON inválido"}), 400
+    if data.get("secret", "") != PANEL_SECRET:
+        return jsonify({"ok": False, "error": "PANEL_SECRET incorrecto"}), 403
+    bearer = str(data.get("bearer", "")).strip()
+    if not bearer:
+        return jsonify({"ok": False, "error": "Token vacío"}), 400
+    try:
+        guardar_token_persistido(bearer)
+        return jsonify({"ok": True})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @app.route("/status")
