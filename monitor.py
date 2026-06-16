@@ -3507,7 +3507,7 @@ def _procesar_grupo_producto(product_id, items_grupo):
             })
             continue
 
-        if pdp_meta.get("status_code") == 404:
+        if pdp_meta.get("status_code") == 404 and not offer_data:
             resultados.append({
                 **base_result,
                 "nuevo_estado": "PRODUCTO_NO_EXISTE",
