@@ -2754,6 +2754,22 @@ def extraer_variantes(data):
     return resultado
 
 
+def extraer_rsc_decoded(html_text):
+    """Liverpool migró el PDP a Next.js App Router: ya no hay <script id="__NEXT_DATA__">,
+    los datos viajan escapados dentro de self.__next_f.push([1,"...json string..."]).
+    Decodifica y concatena esos fragmentos a texto plano para poder reusar los regex existentes."""
+    if not html_text:
+        return ""
+    chunks = re.findall(r'self\.__next_f\.push\(\[1,("(?:[^"\\]|\\.)*")\]\)', html_text)
+    partes = []
+    for chunk in chunks:
+        try:
+            partes.append(json.loads(chunk))
+        except Exception:
+            continue
+    return "".join(partes)
+
+
 def extraer_buybox_legacy(html_text):
     if not html_text:
         return None, None, []
@@ -3168,19 +3184,28 @@ def _fetch_pdp_variantes(url):
         }
         if mapa:
             return mapa, _meta_api("PDP", r.status_code, confidence="pdp_bestoffer")
+
+        confidence = "pdp_legacy"
         seller, price, otros = extraer_buybox_legacy(r.text)
+        if not seller:
+            texto_rsc = extraer_rsc_decoded(r.text)
+            if texto_rsc:
+                seller, price, otros = extraer_buybox_legacy(texto_rsc)
+                confidence = "pdp_legacy_rsc"
         sku_match = re.search(r"[?&]skuid=(\d+)", url)
         if seller and sku_match:
             sku_id = normalizar_identificador(sku_match.group(1))
+            ofertas = [{"seller": seller, "sellerId": "", "precio": formatear_precio(price), "stock": None}]
+            ofertas += [{"seller": o["seller"], "sellerId": "", "precio": formatear_precio(o["precio"]), "stock": None} for o in otros]
             return {
                 sku_id: {
                     "skuId": sku_id,
                     "buybox": {"seller": seller, "sellerId": "", "precio": formatear_precio(price), "stock": None},
-                    "offers": [{"seller": seller, "sellerId": "", "precio": formatear_precio(price), "stock": None}],
+                    "offers": ofertas,
                     "otros_sellers": otros,
-                    "sellersCount": len(otros) + 1,
+                    "sellersCount": len(ofertas),
                 }
-            }, _meta_api("PDP", r.status_code, confidence="pdp_legacy")
+            }, _meta_api("PDP", r.status_code, confidence=confidence)
         return {}, _meta_api("PDP", r.status_code, "PDP sin variantes/bestOffer")
     except Exception as exc:
         return {}, _meta_api("PDP", error_message=f"pdp_error: {exc}")
@@ -3459,13 +3484,15 @@ def _resumen_vgc(product_id, items_grupo, alloffers_mapa):
 def _procesar_grupo_producto(product_id, items_grupo):
     """Obtiene datos de buybox via API y procesa cada variante. Thread-safe."""
     alloffers_mapa, alloffers_meta = _fetch_alloffers_api(product_id)
-    pdp_mapa, pdp_meta = _fetch_pdp_variantes(items_grupo[0]["url"]) if items_grupo else ({}, _meta_api("PDP", error_message="sin items"))
     RESUMEN_VGC[product_id] = _resumen_vgc(product_id, items_grupo, alloffers_mapa)
 
     resultados = []
     for item in items_grupo:
         sku_liverpool = normalizar_identificador(item["sku_liverpool"])
         offer_data = alloffers_mapa.get(sku_liverpool)
+        # El PDP nuevo de Liverpool (App Router) solo embebe datos del skuid pedido en la URL,
+        # ya no trae todas las variantes del producto en un solo fetch -> hay que pedir por SKU.
+        pdp_mapa, pdp_meta = _fetch_pdp_variantes(item["url"])
         pdp_variante = pdp_mapa.get(sku_liverpool)
         base_result = {
             "item": item, "sku_patish": item["sku_patish"],
