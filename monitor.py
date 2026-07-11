@@ -372,6 +372,13 @@ a.lnk:hover{color:var(--primary)}
       <div class="insight-row"><span>Con ventas 30d</span><strong id="io-ventas">—</strong></div>
       <div class="insight-row"><span>Con precio mínimo</span><strong id="io-minimo">—</strong></div>
     </div>
+    <div class="insight-box insight-click" onclick="irANoOfertando()" title="Ver, con stock, cuáles ofertas no aparecen ofertando en Liverpool">
+      <div class="insight-title">Visibilidad (con stock)</div>
+      <div class="insight-row"><span>Con stock</span><strong id="iv-total">—</strong></div>
+      <div class="insight-row"><span>Visibles en Liverpool</span><strong id="iv-visibles">—</strong></div>
+      <div class="insight-row"><span>No visibles</span><strong id="iv-novisibles">—</strong></div>
+      <div class="insight-row"><span>Visibles pero no ofertando</span><strong id="iv-noofertando">—</strong></div>
+    </div>
     <div class="insight-box">
       <div class="insight-title">Para actuar hoy</div>
       <div id="acciones-box"><div class="insight-row"><span>Cargando...</span><strong>—</strong></div></div>
@@ -651,6 +658,17 @@ function irAOportunidades(){
   scrollTabla();
 }
 
+function irANoOfertando(){
+  columnFilters={...DEFAULT_COLUMN_FILTERS};
+  document.querySelectorAll('[data-col-filter]').forEach(input=>{input.value=''});
+  document.getElementById('sku-search').value='';
+  busquedaActual='';
+  accionActual='TODAS';
+  setFiltro('VISIBLE_SIN_OFERTA');
+  actualizarResumenFiltros();
+  scrollTabla();
+}
+
 function irAAccion(grupo){
   columnFilters={...DEFAULT_COLUMN_FILTERS};
   document.querySelectorAll('[data-col-filter]').forEach(input=>{input.value=''});
@@ -782,6 +800,10 @@ function esOportunidad(item){
     && !!item.reprice_sugerido
     && (numeroSeguro(item.stock_tuyo)??0)>0
     && confianzaBucket(item)!=='API';
+}
+
+function esNoOfertandoConStock(item){
+  return item.estado==='NO_PRENDIDA' && (numeroSeguro(item.stock_tuyo)??0)>0;
 }
 
 function pasaFiltroConfianza(item){
@@ -1007,6 +1029,11 @@ function renderInsights(data){
   document.getElementById('io-alta').textContent=hacerAhora.length;
   document.getElementById('io-ventas').textContent=oportunidades.filter(i=>(numeroSeguro(i.ventas_30d_piezas)||0)>0).length;
   document.getElementById('io-minimo').textContent=oportunidades.filter(i=>!!i.precio_minimo).length;
+  const rv=data.resumen_visibilidad||{};
+  document.getElementById('iv-total').textContent=rv.con_stock??0;
+  document.getElementById('iv-visibles').textContent=rv.visibles??0;
+  document.getElementById('iv-novisibles').textContent=rv.no_visibles??0;
+  document.getElementById('iv-noofertando').textContent=rv.no_ofertando??0;
   const acciones=document.getElementById('acciones-box');
   if(acciones){
     acciones.innerHTML=[
@@ -1116,7 +1143,9 @@ function renderTabla(){
     ? todosItems
     : filtroActual==='OPORTUNIDADES'
       ? todosItems.filter(esOportunidad)
-      : todosItems.filter(i=>i.estado===filtroActual);
+      : filtroActual==='VISIBLE_SIN_OFERTA'
+        ? todosItems.filter(esNoOfertandoConStock)
+        : todosItems.filter(i=>i.estado===filtroActual);
   items=items.filter(pasaFiltroConfianza);
   items=items.filter(pasaFiltroAccion);
   if(busquedaActual){
@@ -1812,6 +1841,43 @@ def confianza_bucket_item(item):
     return "OTRO"
 
 
+ESTADOS_VISIBLES_EN_LIVERPOOL = {
+    "GANANDO", "GANANDO_VERIFICADO", "GANANDO_API_NO_VISIBLE", "PERDIDO", "NO_PRENDIDA",
+}
+
+
+def tiene_stock_item(item):
+    return (normalizar_entero(item.get("stock_tuyo")) or 0) > 0
+
+
+def es_visible_item(item):
+    return item.get("estado") in ESTADOS_VISIBLES_EN_LIVERPOOL
+
+
+def es_no_ofertando_con_stock_item(item):
+    """Con stock, la oferta SI aparece en Liverpool (hay otros sellers) pero PATISH no está ofertando."""
+    return item.get("estado") == "NO_PRENDIDA" and tiene_stock_item(item)
+
+
+ESTADOS_OFERTA_ACTIVA = {
+    "GANANDO", "GANANDO_VERIFICADO", "GANANDO_API_NO_VISIBLE", "PERDIDO", "NO_PRENDIDA",
+    "SKU_INVALIDO", "PRODUCTO_NO_EXISTE", "VGC_INVALIDO", "SIN_DATOS", "SIN_DATOS_STALE",
+}
+
+
+def calcular_resumen_visibilidad(items):
+    con_stock = [item for item in items if item.get("estado") in ESTADOS_OFERTA_ACTIVA and tiene_stock_item(item)]
+    visibles = [item for item in con_stock if es_visible_item(item)]
+    no_visibles = [item for item in con_stock if not es_visible_item(item)]
+    no_ofertando = [item for item in con_stock if es_no_ofertando_con_stock_item(item)]
+    return {
+        "con_stock": len(con_stock),
+        "visibles": len(visibles),
+        "no_visibles": len(no_visibles),
+        "no_ofertando": len(no_ofertando),
+    }
+
+
 def es_oportunidad_item(item):
     return (
         item.get("estado") == "PERDIDO"
@@ -1960,6 +2026,8 @@ def filtrar_items_estado(items, estado, busqueda, filtros_columna=None, confianz
     if estado and estado != "TODOS":
         if estado == "OPORTUNIDADES":
             filtrados = [item for item in filtrados if es_oportunidad_item(item)]
+        elif estado == "VISIBLE_SIN_OFERTA":
+            filtrados = [item for item in filtrados if es_no_ofertando_con_stock_item(item)]
         else:
             filtrados = [item for item in filtrados if item["estado"] == estado]
     confianza = limpiar_texto(confianza).upper() or "TODAS"
@@ -2213,6 +2281,7 @@ def api_estado():
         "sin_stock": sum(1 for item in items if item["estado"] == "INACTIVA_STOCK"),
         "total": len(items),
         "competidores": resumen_competidores(items),
+        "resumen_visibilidad": calcular_resumen_visibilidad(items),
         "items": items,
     })
 
@@ -2288,6 +2357,26 @@ def api_vgc(vgc):
     return jsonify({"ok": True, "vgc": key, "resumen": RESUMEN_VGC.get(key, {})})
 
 
+def aplicar_hyperlinks_url(hoja, columna_nombre="URL"):
+    """Convierte la columna de URL en links clickeables reales (no solo texto plano)."""
+    from openpyxl.styles import Font as _Font
+    col_idx = None
+    for celda in hoja[1]:
+        if celda.value == columna_nombre:
+            col_idx = celda.column
+            break
+    if not col_idx:
+        return
+    link_font = _Font(name="Calibri", color="0563C1", underline="single", size=11)
+    for fila in range(2, hoja.max_row + 1):
+        celda = hoja.cell(row=fila, column=col_idx)
+        url = celda.value
+        if url:
+            celda.hyperlink = url
+            celda.font = link_font
+            celda.value = "Ver oferta en Liverpool"
+
+
 @app.route("/api/exportar")
 def api_exportar():
     estado = request.args.get("estado", "TODOS").strip().upper() or "TODOS"
@@ -2335,6 +2424,7 @@ def api_exportar():
         df.to_excel(writer, sheet_name="buybox", index=False)
         hoja = writer.sheets["buybox"]
         hoja.freeze_panes = "A2"
+        aplicar_hyperlinks_url(hoja)
         for columna in hoja.columns:
             letra = columna[0].column_letter
             largo = max(len(str(celda.value or "")) for celda in columna)
@@ -2393,6 +2483,7 @@ def api_exportar_acciones():
         df.to_excel(writer, sheet_name="acciones", index=False)
         hoja = writer.sheets["acciones"]
         hoja.freeze_panes = "A2"
+        aplicar_hyperlinks_url(hoja)
         for columna in hoja.columns:
             letra = columna[0].column_letter
             largo = max(len(str(celda.value or "")) for celda in columna)
