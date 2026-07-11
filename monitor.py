@@ -72,31 +72,6 @@ HEADERS = {
 
 CDMX_TZ = timezone(timedelta(hours=-6))
 
-# Sesión HTTP con cookies de Akamai (se renueva automáticamente si expira)
-_SESSION = requests.Session()
-_SESSION.headers.update({
-    "User-Agent": HEADERS["User-Agent"],
-    "Accept-Language": "es-MX,es;q=0.9",
-})
-_SESSION_LOCK = threading.Lock()
-_SESSION_COOKIES_AT = 0
-_SESSION_COOKIE_TTL = 1800  # renovar cada 30 min
-
-
-def _asegurar_cookies():
-    """Obtiene cookies de Akamai si no existen o expiraron."""
-    global _SESSION_COOKIES_AT
-    now = time.time()
-    with _SESSION_LOCK:
-        if now - _SESSION_COOKIES_AT < _SESSION_COOKIE_TTL:
-            return
-        try:
-            _SESSION.get("https://www.liverpool.com.mx/tienda/", timeout=15)
-            _SESSION_COOKIES_AT = now
-            print("🍪 Cookies Akamai renovadas")
-        except Exception as exc:
-            print(f"⚠️ No se pudieron obtener cookies: {exc}")
-
 ULTIMO_ESTADO = {}
 ULTIMO_PRECIO = {}
 ULTIMO_SELLER = {}
@@ -1349,20 +1324,6 @@ def es_estado_ganador_verificado(estado):
     return normalizar_estado_persistido(estado) == "GANANDO_VERIFICADO"
 
 
-def es_error_sku_invalido(mensaje):
-    return "sku id no es válido" in limpiar_texto(mensaje).lower() or "sku id no es valido" in limpiar_texto(mensaje).lower()
-
-
-def obtener_precio_actual(datos):
-    if not isinstance(datos, dict):
-        return ""
-    for llave in ("promoPrice", "salePrice", "listPrice", "sortPrice"):
-        precio = formatear_precio(datos.get(llave))
-        if precio:
-            return precio
-    return ""
-
-
 def obtener_stock_actual(datos):
     if not isinstance(datos, dict):
         return None
@@ -1371,17 +1332,6 @@ def obtener_stock_actual(datos):
         if stock is not None:
             return stock
     return None
-
-
-def resumir_oferta(oferta):
-    if not isinstance(oferta, dict):
-        return {}
-    return {
-        "seller": limpiar_texto(oferta.get("sellerName")),
-        "sellerId": normalizar_identificador(oferta.get("sellerId")),
-        "precio": obtener_precio_actual(oferta),
-        "stock": obtener_stock_actual(oferta),
-    }
 
 
 def clasificar_estado_oferta(estado_oferta, motivo, cantidad):
@@ -2765,86 +2715,6 @@ def obtener_html(url, reintentos=3):
 # SCRAPING
 # ================================
 
-def extraer_next_data(html_text):
-    if not html_text:
-        return None
-    match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html_text, re.DOTALL)
-    if not match:
-        return None
-    try:
-        return json.loads(match.group(1))
-    except Exception:
-        return None
-
-
-def find_deep(objeto, llave, resultados=None):
-    if resultados is None:
-        resultados = []
-    if not isinstance(objeto, (dict, list)):
-        return resultados
-    if isinstance(objeto, dict):
-        if llave in objeto:
-            resultados.append(objeto[llave])
-        for valor in objeto.values():
-            find_deep(valor, llave, resultados)
-    else:
-        for valor in objeto:
-            find_deep(valor, llave, resultados)
-    return resultados
-
-
-def extraer_variantes(data):
-    if not data:
-        return []
-    variants_blocks = find_deep(data, "variants")
-    if not variants_blocks:
-        return []
-    biggest = sorted(variants_blocks, key=lambda block: len(block) if isinstance(block, list) else 0, reverse=True)[0]
-    if not isinstance(biggest, list):
-        return []
-    resultado = []
-    for variante in biggest:
-        if not isinstance(variante, dict):
-            continue
-        offers_obj = variante.get("offers", {})
-        prices_obj = variante.get("prices", {})
-        offers_arr = []
-        best_offer = None
-        if isinstance(offers_obj, dict):
-            offers_arr = offers_obj.get("offers", [])
-            if not isinstance(offers_arr, list):
-                offers_arr = []
-            best_offer = offers_obj.get("bestOffer")
-        ofertas_resumidas = [resumir_oferta(oferta) for oferta in offers_arr if isinstance(oferta, dict)]
-        ganador = None
-        if isinstance(best_offer, dict):
-            ganador = resumir_oferta(best_offer)
-        elif ofertas_resumidas:
-            ganador = ofertas_resumidas[0]
-        otros = []
-        for oferta in ofertas_resumidas:
-            if not oferta.get("seller"):
-                continue
-            if ganador and oferta.get("seller") == ganador.get("seller") and oferta.get("sellerId") == ganador.get("sellerId"):
-                continue
-            otros.append({"seller": oferta.get("seller", ""), "precio": oferta.get("precio", "")})
-            if len(otros) >= 4:
-                break
-        resultado.append({
-            "skuId": normalizar_identificador(variante.get("skuId")),
-            "color": limpiar_texto(variante.get("color")),
-            "size": limpiar_texto(variante.get("size")),
-            "hasValidOnlineInventory": str(variante.get("hasValidOnlineInventory", "false")).lower(),
-            "sellersCount": variante.get("sellersCount", 0),
-            "precio_liverpool": obtener_precio_actual(prices_obj),
-            "stock_liverpool": obtener_stock_actual(variante.get("inventory", {})),
-            "buybox": ganador,
-            "offers": ofertas_resumidas,
-            "otros_sellers": otros,
-        })
-    return resultado
-
-
 def extraer_buybox_offerlisting(texto_rsc, sku_id):
     """Lee las ofertas del SKU exacto desde /tienda/mirakl/offerListing (página dedicada
     a un solo SKU). El PDP general trae productos recomendados/cross-sell con su propio
@@ -2911,43 +2781,6 @@ def extraer_rsc_decoded(html_text):
         except Exception:
             continue
     return "".join(partes)
-
-
-def extraer_buybox_legacy(html_text):
-    if not html_text:
-        return None, None, []
-    seller = None
-    price = None
-    patrones = [
-        r'"bestOffer"\s*:\s*\{[^{}]*?"salePrice"\s*:\s*"?(\d+(?:\.\d+)?)"?[^{}]*?"sellerName"\s*:\s*"([^"]+)"',
-        r'"bestOffer"\s*:\s*\{[^{}]*?"sellerName"\s*:\s*"([^"]+)"[^{}]*?"salePrice"\s*:\s*"?(\d+(?:\.\d+)?)"?',
-    ]
-    for patron in patrones:
-        match = re.search(patron, html_text, re.DOTALL)
-        if not match:
-            continue
-        if "salePrice" in patron.split("sellerName")[0]:
-            price = match.group(1)
-            seller = match.group(2)
-        else:
-            seller = match.group(1)
-            price = match.group(2)
-        break
-    if not seller:
-        return None, None, []
-    alternativos = []
-    vistos = {seller}
-    for match in re.finditer(
-        r'"sellerName"\s*:\s*"([^"]+)"[^}]{0,200}?"salePrice"\s*:\s*"?(\d+(?:\.\d+)?)"?', html_text
-    ):
-        seller_alt = match.group(1)
-        if seller_alt in vistos:
-            continue
-        vistos.add(seller_alt)
-        alternativos.append({"seller": seller_alt, "precio": match.group(2)})
-        if len(alternativos) >= 4:
-            break
-    return seller, price, alternativos
 
 
 # ================================
@@ -3224,34 +3057,6 @@ def limpiar_estado_item(sku, estado):
 # PROCESAMIENTO PARALELO
 # ================================
 
-def _api_get(url):
-    """GET autenticado con sesión de cookies. Un reintento si 403 (renueva cookies)."""
-    _asegurar_cookies()
-    hdrs = {
-        "Accept": "application/json, text/plain, */*",
-        "Referer": "https://www.liverpool.com.mx/tienda/",
-        "Origin": "https://www.liverpool.com.mx",
-    }
-    for intento in range(2):
-        try:
-            r = _SESSION.get(url, headers=hdrs, timeout=15)
-            if r.status_code == 200:
-                return r
-            if r.status_code == 403 and intento == 0:
-                global _SESSION_COOKIES_AT
-                _SESSION_COOKIES_AT = 0
-                _asegurar_cookies()
-                time.sleep(1)
-                continue
-            return r
-        except Exception as exc:
-            if intento == 0:
-                time.sleep(1)
-                continue
-            print(f"  Error HTTP: {exc}")
-    return None
-
-
 def _meta_api(source, status_code=None, error_message="", confidence=""):
     return {
         "source": source,
@@ -3261,120 +3066,40 @@ def _meta_api(source, status_code=None, error_message="", confidence=""):
     }
 
 
-def _json_error_message(data):
-    if not isinstance(data, dict):
-        return ""
-    return limpiar_texto(data.get("errorMessage") or data.get("message") or data.get("error"))
-
-
-def _fetch_alloffers_api(product_id):
-    """Llama a la API de Liverpool para obtener el mejor seller por SKU del producto."""
-    url = f"https://www.liverpool.com.mx/tienda/browse/marketplace/products/allOffers?productId={product_id}"
-    r = _api_get(url)
-    if not r or r.status_code != 200:
-        if r:
-            print(f"  HTTP {r.status_code} allOffers {product_id}")
-            return {}, _meta_api("allOffers", r.status_code, f"HTTP {r.status_code}")
-        return {}, _meta_api("allOffers", error_message="sin respuesta")
-    try:
-        data = r.json()
-        error_message = _json_error_message(data)
-        if error_message:
-            return {}, _meta_api("allOffers", r.status_code, error_message)
-        result = {}
-        for offer in data.get("skuOffers", []):
-            sku_id = normalizar_identificador(str(offer.get("skuId", "")))
-            if sku_id:
-                result[sku_id] = offer
-        return result, _meta_api("allOffers", r.status_code, confidence="api_ok")
-    except Exception as exc:
-        print(f"  Error parsing allOffers {product_id}: {exc}")
-        return {}, _meta_api("allOffers", r.status_code, f"json_error: {exc}")
-
-
-def _fetch_offers_listing(sku_liverpool):
-    """Obtiene todos los sellers activos para un SKU (para distinguir PERDIDO vs NO_PRENDIDA)."""
-    url = f"https://www.liverpool.com.mx/tienda/browse/marketplace/skus/offersListing?skuId={sku_liverpool}"
-    r = _api_get(url)
-    if not r or r.status_code != 200:
-        if r:
-            return [], _meta_api("offersListing", r.status_code, f"HTTP {r.status_code}")
-        return [], _meta_api("offersListing", error_message="sin respuesta")
-    try:
-        data = r.json()
-        error_message = _json_error_message(data)
-        if error_message:
-            return [], _meta_api("offersListing", r.status_code, error_message)
-        return data.get("sellersOfferDetails", []), _meta_api("offersListing", r.status_code, confidence="api_ok")
-    except Exception as exc:
-        return [], _meta_api("offersListing", r.status_code, f"json_error: {exc}")
-
-
 def _fetch_pdp_variantes(url):
-    """Lee el PDP publico; es la fuente final de buybox que ve el comprador."""
+    """Lee las ofertas del SKU vía la página dedicada mirakl/offerListing (1 solo request;
+    antes se pedía primero el PDP general y luego esta página, el doble de tráfico por SKU)."""
     try:
-        r = requests.get(url, headers=HEADERS, timeout=20)
+        sku_match = re.search(r"[?&]skuid=(\d+)", url)
+        pid_match = re.search(r"/producto/([^?/]+)", url)
+        if not sku_match or not pid_match:
+            return {}, _meta_api("PDP", error_message="url sin sku/product_id")
+        sku_id = normalizar_identificador(sku_match.group(1))
+        product_id = pid_match.group(1)
+        url_ofertas = f"https://www.liverpool.com.mx/tienda/mirakl/offerListing?productId={product_id}&skuId={sku_id}"
+        r = requests.get(url_ofertas, headers=HEADERS, timeout=20)
         if r.status_code == 404:
             return {}, _meta_api("PDP", 404, "PDP 404", "pdp_404")
         if r.status_code != 200:
             return {}, _meta_api("PDP", r.status_code, f"HTTP {r.status_code}")
-        data = extraer_next_data(r.text)
-        variantes = extraer_variantes(data)
-        mapa = {
-            normalizar_identificador(variante.get("skuId", "")): variante
-            for variante in variantes
-            if normalizar_identificador(variante.get("skuId", ""))
-        }
-        if mapa:
-            return mapa, _meta_api("PDP", r.status_code, confidence="pdp_bestoffer")
 
-        seller, price, otros = extraer_buybox_legacy(r.text)
-        if seller:
-            sku_match = re.search(r"[?&]skuid=(\d+)", url)
-            if sku_match:
-                sku_id = normalizar_identificador(sku_match.group(1))
-                ofertas = [{"seller": seller, "sellerId": "", "precio": formatear_precio(price), "stock": None}]
-                ofertas += [{"seller": o["seller"], "sellerId": "", "precio": formatear_precio(o["precio"]), "stock": None} for o in otros]
-                return {
-                    sku_id: {
-                        "skuId": sku_id,
-                        "buybox": {"seller": seller, "sellerId": "", "precio": formatear_precio(price), "stock": None},
-                        "offers": ofertas,
-                        "otros_sellers": otros,
-                        "sellersCount": len(ofertas),
-                    }
-                }, _meta_api("PDP", r.status_code, confidence="pdp_legacy")
+        texto_rsc = extraer_rsc_decoded(r.text)
+        ganador, precio_ganador, ofertas_encontradas = extraer_buybox_offerlisting(texto_rsc, sku_id)
+        if not ganador:
+            return {}, _meta_api("PDP", r.status_code, "PDP sin variantes/bestOffer")
 
-        # App Router: el sku exacto se lee de la página de ofertas dedicada (mirakl/offerListing),
-        # no del PDP general (que mezcla productos recomendados con su propio bestOffer).
-        sku_match = re.search(r"[?&]skuid=(\d+)", url)
-        pid_match = re.search(r"/producto/([^?/]+)", url)
-        if sku_match and pid_match:
-            sku_id = normalizar_identificador(sku_match.group(1))
-            product_id = pid_match.group(1)
-            url_ofertas = f"https://www.liverpool.com.mx/tienda/mirakl/offerListing?productId={product_id}&skuId={sku_id}"
-            try:
-                r2 = requests.get(url_ofertas, headers=HEADERS, timeout=20)
-            except Exception:
-                r2 = None
-            if r2 is not None and r2.status_code == 200:
-                texto_rsc = extraer_rsc_decoded(r2.text)
-                ganador, precio_ganador, ofertas_encontradas = extraer_buybox_offerlisting(texto_rsc, sku_id)
-                if ganador:
-                    ofertas = [
-                        {"seller": o["seller"], "sellerId": o.get("sellerId", ""), "precio": formatear_precio(o["precio"]), "stock": None}
-                        for o in ofertas_encontradas
-                    ] or [{"seller": ganador, "sellerId": "", "precio": formatear_precio(precio_ganador), "stock": None}]
-                    return {
-                        sku_id: {
-                            "skuId": sku_id,
-                            "buybox": {"seller": ganador, "sellerId": "", "precio": formatear_precio(precio_ganador), "stock": None},
-                            "offers": ofertas,
-                            "sellersCount": len(ofertas),
-                        }
-                    }, _meta_api("PDP", r2.status_code, confidence="pdp_offerlisting")
-
-        return {}, _meta_api("PDP", r.status_code, "PDP sin variantes/bestOffer")
+        ofertas = [
+            {"seller": o["seller"], "sellerId": o.get("sellerId", ""), "precio": formatear_precio(o["precio"]), "stock": None}
+            for o in ofertas_encontradas
+        ] or [{"seller": ganador, "sellerId": "", "precio": formatear_precio(precio_ganador), "stock": None}]
+        return {
+            sku_id: {
+                "skuId": sku_id,
+                "buybox": {"seller": ganador, "sellerId": "", "precio": formatear_precio(precio_ganador), "stock": None},
+                "offers": ofertas,
+                "sellersCount": len(ofertas),
+            }
+        }, _meta_api("PDP", r.status_code, confidence="pdp_offerlisting")
     except Exception as exc:
         return {}, _meta_api("PDP", error_message=f"pdp_error: {exc}")
 
@@ -3415,99 +3140,6 @@ def _resumen_sellers_pdp(variante_pdp):
             stock_mio = s_stock
         else:
             otros.append({"seller": s_name, "precio": s_price, "stock": s_stock})
-
-    return {
-        "seller_ganador": seller_ganador,
-        "seller_id_ganador": seller_id_ganador,
-        "precio_ganador": precio_ganador,
-        "stock_ganador": stock_ganador,
-        "segundo_seller": segundo_seller,
-        "segundo_precio": segundo_precio,
-        "tiene_mi_oferta": tiene_mi_oferta,
-        "patish_es_primero": patish_es_primero,
-        "precio_mio": precio_mio,
-        "stock_mio": stock_mio,
-        "otros": otros[:4],
-    }
-
-
-def _descripcion_conflicto_pdp_api(resumen_pdp, offer_data):
-    if not isinstance(offer_data, dict):
-        return ""
-    api_seller = limpiar_texto(offer_data.get("bestSeller", ""))
-    api_seller_id = normalizar_identificador(str(offer_data.get("sellerId", "")))
-    api_price = formatear_precio(offer_data.get("bestSalePrice") or offer_data.get("bestPromoPrice") or "")
-    pdp_seller = resumen_pdp.get("seller_ganador", "")
-    pdp_seller_id = resumen_pdp.get("seller_id_ganador", "")
-    pdp_price = resumen_pdp.get("precio_ganador", "")
-    seller_conflict = False
-    if api_seller_id and pdp_seller_id:
-        seller_conflict = api_seller_id != pdp_seller_id
-    elif api_seller and pdp_seller:
-        seller_conflict = limpiar_texto(api_seller).lower() != limpiar_texto(pdp_seller).lower()
-    price_conflict = bool(api_price and pdp_price and api_price != pdp_price)
-    if not seller_conflict and not price_conflict:
-        return ""
-    return f"PDP manda: {pdp_seller or '-'} ${pdp_price or '-'}; allOffers decía: {api_seller or '-'} ${api_price or '-'}"
-
-
-def _fetch_pdp_status(url):
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=15)
-        if r.status_code == 404:
-            return _meta_api("PDP", 404, "PDP 404", "pdp_404")
-        if r.status_code != 200:
-            return _meta_api("PDP", r.status_code, f"HTTP {r.status_code}")
-        return _meta_api("PDP", 200, "", "pdp_ok")
-    except Exception as exc:
-        return _meta_api("PDP", error_message=f"pdp_error: {exc}")
-
-
-def _resolver_estado_invalido(item, meta_api):
-    """Distingue SKU inválido de PDP inexistente cuando Liverpool ya reportó error fuerte."""
-    if not es_error_sku_invalido(meta_api.get("error_message", "")):
-        return None, meta_api
-    pdp_meta = _fetch_pdp_status(item["url"])
-    if pdp_meta.get("status_code") == 404:
-        return "PRODUCTO_NO_EXISTE", pdp_meta
-    return "SKU_INVALIDO", meta_api
-
-
-def _resumen_sellers_listing(all_sellers):
-    otros = []
-    precio_mio = ""
-    stock_mio = None
-    tiene_mi_oferta = False
-    patish_es_primero = False
-    seller_ganador = ""
-    seller_id_ganador = ""
-    precio_ganador = ""
-    stock_ganador = None
-    segundo_seller = ""
-    segundo_precio = ""
-
-    if all_sellers:
-        primero = all_sellers[0]
-        seller_ganador = limpiar_texto(primero.get("sellerName", ""))
-        seller_id_ganador = normalizar_identificador(str(primero.get("sellerId", "")))
-        precio_ganador = formatear_precio(primero.get("salePrice", ""))
-        stock_ganador = obtener_stock_actual(primero)
-        patish_es_primero = es_seller_mio(seller_ganador, seller_id_ganador)
-        if len(all_sellers) > 1:
-            segundo = all_sellers[1]
-            segundo_seller = limpiar_texto(segundo.get("sellerName", ""))
-            segundo_precio = formatear_precio(segundo.get("salePrice", ""))
-
-    for s in all_sellers:
-        s_name = limpiar_texto(s.get("sellerName", ""))
-        s_id = normalizar_identificador(str(s.get("sellerId", "")))
-        s_price = formatear_precio(s.get("salePrice", ""))
-        if es_seller_mio(s_name, s_id):
-            tiene_mi_oferta = True
-            precio_mio = s_price
-            stock_mio = obtener_stock_actual(s)
-        else:
-            otros.append({"seller": s_name, "precio": s_price, "stock": obtener_stock_actual(s)})
 
     return {
         "seller_ganador": seller_ganador,
@@ -3650,16 +3282,14 @@ def _resumen_vgc(product_id, items_grupo, alloffers_mapa):
 
 
 def _procesar_grupo_producto(product_id, items_grupo):
-    """Obtiene datos de buybox via API y procesa cada variante. Thread-safe."""
-    alloffers_mapa, alloffers_meta = _fetch_alloffers_api(product_id)
-    RESUMEN_VGC[product_id] = _resumen_vgc(product_id, items_grupo, alloffers_mapa)
+    """Obtiene datos de buybox vía mirakl/offerListing (1 request por SKU). Thread-safe.
+    allOffers/offersListing (APIs viejas de Liverpool) ya no existen (404 permanente desde su
+    migración a Next.js App Router) -> ya no se llaman, solo agregaban tráfico muerto."""
+    RESUMEN_VGC[product_id] = _resumen_vgc(product_id, items_grupo, {})
 
     resultados = []
     for item in items_grupo:
         sku_liverpool = normalizar_identificador(item["sku_liverpool"])
-        offer_data = alloffers_mapa.get(sku_liverpool)
-        # El PDP nuevo de Liverpool (App Router) solo embebe datos del skuid pedido en la URL,
-        # ya no trae todas las variantes del producto en un solo fetch -> hay que pedir por SKU.
         pdp_mapa, pdp_meta = _fetch_pdp_variantes(item["url"])
         pdp_variante = pdp_mapa.get(sku_liverpool)
         base_result = {
@@ -3667,15 +3297,14 @@ def _procesar_grupo_producto(product_id, items_grupo):
             "otros": [], "precio_mio": "", "stock_mio": None,
             "stock_ganador": None, "segundo_seller": "", "segundo_precio": "",
             "color_nuevo": "", "size_nuevo": "", "url_nuevo": None,
-            "source": alloffers_meta.get("source", "allOffers"),
-            "status_code": alloffers_meta.get("status_code", ""),
-            "error_message": alloffers_meta.get("error_message", ""),
-            "confidence": alloffers_meta.get("confidence", ""),
+            "source": pdp_meta.get("source", "PDP"),
+            "status_code": pdp_meta.get("status_code", ""),
+            "error_message": pdp_meta.get("error_message", ""),
+            "confidence": pdp_meta.get("confidence", ""),
         }
 
         if pdp_variante:
             resumen_pdp = _resumen_sellers_pdp(pdp_variante)
-            conflicto_pdp_api = _descripcion_conflicto_pdp_api(resumen_pdp, offer_data)
             if resumen_pdp["patish_es_primero"]:
                 nuevo_estado = "GANANDO_VERIFICADO"
             elif resumen_pdp["tiene_mi_oferta"]:
@@ -3695,149 +3324,14 @@ def _procesar_grupo_producto(product_id, items_grupo):
                 "stock_ganador": resumen_pdp["stock_ganador"],
                 "segundo_seller": resumen_pdp["segundo_seller"],
                 "segundo_precio": resumen_pdp["segundo_precio"],
-                "source": "PDP",
-                "status_code": pdp_meta.get("status_code", ""),
-                "error_message": conflicto_pdp_api or pdp_meta.get("error_message", ""),
-                "confidence": "pdp_conflict_api" if conflicto_pdp_api else pdp_meta.get("confidence", "pdp_bestoffer"),
             })
             continue
 
-        if pdp_meta.get("status_code") == 404 and not offer_data:
-            resultados.append({
-                **base_result,
-                "nuevo_estado": "PRODUCTO_NO_EXISTE",
-                "seller": "",
-                "price": "",
-                "source": pdp_meta.get("source", ""),
-                "status_code": pdp_meta.get("status_code", ""),
-                "error_message": pdp_meta.get("error_message", ""),
-                "confidence": "pdp_404",
-            })
+        if pdp_meta.get("status_code") == 404:
+            resultados.append({**base_result, "nuevo_estado": "PRODUCTO_NO_EXISTE", "seller": "", "price": ""})
             continue
 
-        if not offer_data:
-            all_sellers, listing_meta = _fetch_offers_listing(sku_liverpool)
-            estado_invalido, meta_invalida = _resolver_estado_invalido(item, listing_meta if listing_meta.get("error_message") else alloffers_meta)
-            if estado_invalido:
-                resultados.append({
-                    **base_result,
-                    "nuevo_estado": estado_invalido,
-                    "seller": "",
-                    "price": "",
-                    "source": meta_invalida.get("source", ""),
-                    "status_code": meta_invalida.get("status_code", ""),
-                    "error_message": meta_invalida.get("error_message", ""),
-                    "confidence": "invalidado",
-                })
-                continue
-            if all_sellers:
-                resumen_listing = _resumen_sellers_listing(all_sellers)
-                if resumen_listing["patish_es_primero"]:
-                    nuevo_estado = "GANANDO_VERIFICADO"
-                elif resumen_listing["tiene_mi_oferta"]:
-                    nuevo_estado = "PERDIDO"
-                else:
-                    nuevo_estado = "NO_PRENDIDA"
-                resultados.append({
-                    **base_result,
-                    "nuevo_estado": nuevo_estado,
-                    "seller": resumen_listing["seller_ganador"],
-                    "price": resumen_listing["precio_ganador"],
-                    "otros": resumen_listing["otros"],
-                    "precio_mio": resumen_listing["precio_mio"],
-                    "stock_mio": resumen_listing["stock_mio"],
-                    "stock_ganador": resumen_listing["stock_ganador"],
-                    "segundo_seller": resumen_listing["segundo_seller"],
-                    "segundo_precio": resumen_listing["segundo_precio"],
-                    "source": "offersListing",
-                    "status_code": listing_meta.get("status_code", ""),
-                    "error_message": listing_meta.get("error_message", ""),
-                    "confidence": "verified_listing",
-                })
-                continue
-            pdp_meta = _fetch_pdp_status(item["url"])
-            if pdp_meta.get("status_code") == 404:
-                resultados.append({
-                    **base_result,
-                    "nuevo_estado": "PRODUCTO_NO_EXISTE",
-                    "seller": "",
-                    "price": "",
-                    "source": pdp_meta.get("source", ""),
-                    "status_code": pdp_meta.get("status_code", ""),
-                    "error_message": pdp_meta.get("error_message", ""),
-                    "confidence": "pdp_404",
-                })
-                continue
-            resultados.append({
-                **base_result,
-                "nuevo_estado": "SIN_DATOS", "seller": "", "price": "",
-            })
-            continue
-
-        best_seller = limpiar_texto(offer_data.get("bestSeller", ""))
-        seller_id = normalizar_identificador(str(offer_data.get("sellerId", "")))
-        price = formatear_precio(offer_data.get("bestSalePrice", ""))
-        sellers_count = offer_data.get("sellersCount", 0)
-        es_mio = es_seller_mio(best_seller, seller_id)
-        all_sellers, listing_meta = _fetch_offers_listing(sku_liverpool)
-        estado_invalido, meta_invalida = _resolver_estado_invalido(item, listing_meta)
-        if estado_invalido:
-            resultados.append({
-                **base_result,
-                "nuevo_estado": estado_invalido,
-                "seller": "",
-                "price": "",
-                "source": meta_invalida.get("source", ""),
-                "status_code": meta_invalida.get("status_code", ""),
-                "error_message": meta_invalida.get("error_message", ""),
-                "confidence": "invalidado",
-            })
-            continue
-        resumen_listing = _resumen_sellers_listing(all_sellers)
-
-        if es_mio:
-            if resumen_listing["patish_es_primero"]:
-                nuevo_estado = "GANANDO_VERIFICADO"
-                price = resumen_listing["precio_ganador"] or price
-                best_seller = resumen_listing["seller_ganador"] or best_seller
-                precio_mio = resumen_listing["precio_mio"] or price
-                stock_mio = resumen_listing["stock_mio"]
-                otros = resumen_listing["otros"]
-                confidence = "verified_listing"
-            else:
-                nuevo_estado = "GANANDO_API_NO_VISIBLE"
-                precio_mio = resumen_listing["precio_mio"] or price
-                stock_mio = resumen_listing["stock_mio"]
-                otros = resumen_listing["otros"]
-                confidence = "alloffers_only"
-        else:
-            otros = resumen_listing["otros"]
-            precio_mio = resumen_listing["precio_mio"]
-            stock_mio = resumen_listing["stock_mio"]
-            if resumen_listing["seller_ganador"]:
-                best_seller = resumen_listing["seller_ganador"]
-                price = resumen_listing["precio_ganador"]
-            if resumen_listing["tiene_mi_oferta"]:
-                nuevo_estado = "PERDIDO"
-            elif sellers_count > 0:
-                nuevo_estado = "NO_PRENDIDA"
-            else:
-                nuevo_estado = "PERDIDO"
-            confidence = "verified_listing" if all_sellers else "alloffers_only"
-
-        resultados.append({
-            **base_result,
-            "nuevo_estado": nuevo_estado, "seller": best_seller, "price": price,
-            "otros": otros[:4], "precio_mio": precio_mio, "stock_mio": stock_mio,
-            "stock_ganador": resumen_listing.get("stock_ganador"),
-            "segundo_seller": resumen_listing.get("segundo_seller", ""),
-            "segundo_precio": resumen_listing.get("segundo_precio", ""),
-            "color_nuevo": "", "size_nuevo": "", "url_nuevo": None,
-            "source": "offersListing" if all_sellers else "allOffers",
-            "status_code": listing_meta.get("status_code", alloffers_meta.get("status_code", "")),
-            "error_message": listing_meta.get("error_message", ""),
-            "confidence": confidence,
-        })
+        resultados.append({**base_result, "nuevo_estado": "SIN_DATOS", "seller": "", "price": ""})
 
     return resultados
 
