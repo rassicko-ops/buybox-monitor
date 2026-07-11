@@ -58,6 +58,7 @@ CATALOGO_AUTH_BEARER = os.getenv("CATALOGO_AUTH_BEARER", "").strip()
 CATALOGO_SYNC_INTERVAL_HOURS = float(os.getenv("CATALOGO_SYNC_INTERVAL_HOURS", "24"))
 CATALOGO_SYNC_ON_START = os.getenv("CATALOGO_SYNC_ON_START", "").strip().lower() in {"1", "true", "yes", "si"}
 CATALOGO_TOKEN_ALERT_INTERVAL_HOURS = float(os.getenv("CATALOGO_TOKEN_ALERT_INTERVAL_HOURS", "6"))
+TOKEN_PROACTIVO_HORAS = float(os.getenv("TOKEN_PROACTIVO_HORAS", "20"))
 PANEL_SECRET = os.getenv("PANEL_SECRET", "").strip()
 REPRICER_STEP = float(os.getenv("REPRICER_STEP", "1"))
 
@@ -121,6 +122,10 @@ CATALOGO_SYNC_EXCEL_FILE = os.path.join(DATA_DIR, "catalogo_sync_ultimo.xlsx")
 PRECIOS_MINIMOS_FILE = os.path.join(DATA_DIR, "precios_minimos.json")
 VENTAS_DB_FILE = os.path.join(DATA_DIR, "ventas_monitor.db")
 CATALOGO_TOKEN_FILE = os.path.join(DATA_DIR, "catalogo_auth.json")
+CATALOGO_REFRESH_TOKEN_FILE = os.path.join(DATA_DIR, "catalogo_refresh_token.json")
+CATALOGO_REFRESH_TOKEN_ENV = os.getenv("CATALOGO_REFRESH_TOKEN", "").strip()
+LIVERPOOL_AUTH0_DOMAIN = "https://login-entradaunica.liverpool.com.mx"
+LIVERPOOL_AUTH0_CLIENT_ID = "vX4c873p5H4hWLBiLAFYqT9K491fLbTm"
 PORT = int(os.getenv("PORT", "8080"))
 
 app = Flask(__name__)
@@ -1537,19 +1542,95 @@ def aplicar_catalogo_nuevo(nuevos, source="manual"):
     }
 
 
-def leer_token_persistido():
+def leer_token_persistido_info():
     try:
         with open(CATALOGO_TOKEN_FILE, "r") as f:
-            data = json.load(f)
-        return data.get("bearer", "").strip()
+            return json.load(f)
     except Exception:
-        return ""
+        return {}
+
+
+def leer_token_persistido():
+    return str(leer_token_persistido_info().get("bearer", "")).strip()
+
+
+_TOKEN_PROACTIVO_AVISADO_PARA = ""
+
+
+def verificar_token_por_vencer():
+    """Avisa por Telegram ANTES de que el bearer expire (~24h), no solo cuando ya falló el sync."""
+    global _TOKEN_PROACTIVO_AVISADO_PARA
+    info = leer_token_persistido_info()
+    guardado_at = info.get("guardado_at", "")
+    if not guardado_at or not info.get("bearer"):
+        return
+    try:
+        guardado_dt = datetime.strptime(guardado_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=CDMX_TZ)
+    except Exception:
+        return
+    edad_horas = (datetime.now(CDMX_TZ) - guardado_dt).total_seconds() / 3600
+    if edad_horas < TOKEN_PROACTIVO_HORAS or _TOKEN_PROACTIVO_AVISADO_PARA == guardado_at:
+        return
+    _TOKEN_PROACTIVO_AVISADO_PARA = guardado_at
+    panel_link = "/admin/token" if PANEL_SECRET else "la variable CATALOGO_AUTH_BEARER en Railway"
+    enviar_telegram(
+        "⏰ <b>Token de Liverpool por vencer</b>\n\n"
+        f"Lleva ~{edad_horas:.0f}h activo (dura ~24h). Renuévalo antes de que falle el sync automático.\n"
+        f"Panel: {panel_link}"
+    )
 
 
 def guardar_token_persistido(bearer):
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(CATALOGO_TOKEN_FILE, "w") as f:
         json.dump({"bearer": bearer, "guardado_at": datetime.now(CDMX_TZ).strftime("%Y-%m-%d %H:%M:%S")}, f)
+
+
+def leer_refresh_token_persistido():
+    try:
+        with open(CATALOGO_REFRESH_TOKEN_FILE, "r") as f:
+            data = json.load(f)
+        return data.get("refresh_token", "").strip()
+    except Exception:
+        return ""
+
+
+def guardar_refresh_token_persistido(refresh_token):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(CATALOGO_REFRESH_TOKEN_FILE, "w") as f:
+        json.dump({"refresh_token": refresh_token, "guardado_at": datetime.now(CDMX_TZ).strftime("%Y-%m-%d %H:%M:%S")}, f)
+
+
+def renovar_token_liverpool():
+    """Pide un access_token nuevo con el refresh_token guardado (Auth0, scope offline_access),
+    sin depender de que alguien vuelva a iniciar sesión manualmente cada ~24h.
+    Auth0 puede rotar el refresh_token en cada uso -> siempre se guarda el que venga en la
+    respuesta (o se reutiliza el mismo si no rotó)."""
+    refresh_token = leer_refresh_token_persistido() or CATALOGO_REFRESH_TOKEN_ENV
+    if not refresh_token:
+        return False
+    try:
+        resp = requests.post(
+            f"{LIVERPOOL_AUTH0_DOMAIN}/oauth/token",
+            json={
+                "grant_type": "refresh_token",
+                "client_id": LIVERPOOL_AUTH0_CLIENT_ID,
+                "refresh_token": refresh_token,
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        nuevo_access = data.get("access_token")
+        if not nuevo_access:
+            return False
+        guardar_token_persistido(f"Bearer {nuevo_access}")
+        guardar_refresh_token_persistido(data.get("refresh_token") or refresh_token)
+        print("🔄 Token de Liverpool renovado automáticamente")
+        return True
+    except Exception as exc:
+        print(f"⚠️ No se pudo renovar token automáticamente: {exc}")
+        return False
 
 
 def descargar_catalogo_excel():
@@ -1675,31 +1756,37 @@ def sync_catalogo_desde_url(force=False):
             pass
     if not CATALOGO_SYNC_LOCK.acquire(blocking=False):
         return {"ok": False, "error": "Sync de catálogo ya está corriendo", "configured": True}
+    ya_renovo = False
     try:
-        CATALOGO_SYNC_STATE["last_attempt_at"] = datetime.now(CDMX_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        excel_bytes = descargar_catalogo_excel()
-        os.makedirs(DATA_DIR, exist_ok=True)
-        with open(CATALOGO_SYNC_EXCEL_FILE, "wb") as f:
-            f.write(excel_bytes)
-        nuevos = procesar_excel_catalogo(excel_bytes)
-        resumen = aplicar_catalogo_nuevo(nuevos, source="url")
-        CATALOGO_TOKEN_ALERT_LAST_TS = 0
-        print(f"📦 Catálogo auto-sync OK: {resumen['total']} variantes ({resumen['activas']} activas)")
-        return {"ok": True, "configured": True, **resumen, **CATALOGO_SYNC_STATE}
-    except Exception as exc:
-        error_type = tipo_error_catalogo(exc)
-        error_at = datetime.now(CDMX_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        CATALOGO_SYNC_STATE.update({
-            "ok": False,
-            "error": str(exc),
-            "error_type": error_type,
-            "last_error_at": error_at,
-            "source": "url",
-        })
-        print(f"⚠️ Catálogo auto-sync error: {exc}")
-        if error_type == "token":
-            alertar_token_catalogo_expirado(exc)
-        return {"ok": False, "configured": True, "error": str(exc), **CATALOGO_SYNC_STATE}
+        while True:
+            CATALOGO_SYNC_STATE["last_attempt_at"] = datetime.now(CDMX_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                excel_bytes = descargar_catalogo_excel()
+                os.makedirs(DATA_DIR, exist_ok=True)
+                with open(CATALOGO_SYNC_EXCEL_FILE, "wb") as f:
+                    f.write(excel_bytes)
+                nuevos = procesar_excel_catalogo(excel_bytes)
+                resumen = aplicar_catalogo_nuevo(nuevos, source="url")
+                CATALOGO_TOKEN_ALERT_LAST_TS = 0
+                print(f"📦 Catálogo auto-sync OK: {resumen['total']} variantes ({resumen['activas']} activas)")
+                return {"ok": True, "configured": True, **resumen, **CATALOGO_SYNC_STATE}
+            except Exception as exc:
+                error_type = tipo_error_catalogo(exc)
+                if error_type == "token" and not ya_renovo and renovar_token_liverpool():
+                    ya_renovo = True
+                    continue
+                error_at = datetime.now(CDMX_TZ).strftime("%Y-%m-%d %H:%M:%S")
+                CATALOGO_SYNC_STATE.update({
+                    "ok": False,
+                    "error": str(exc),
+                    "error_type": error_type,
+                    "last_error_at": error_at,
+                    "source": "url",
+                })
+                print(f"⚠️ Catálogo auto-sync error: {exc}")
+                if error_type == "token":
+                    alertar_token_catalogo_expirado(exc)
+                return {"ok": False, "configured": True, "error": str(exc), **CATALOGO_SYNC_STATE}
     finally:
         CATALOGO_SYNC_LOCK.release()
 
@@ -2474,6 +2561,9 @@ button:hover{background:#0284c7}
   <label>Nuevo Bearer token</label>
   <textarea id="token" placeholder="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."></textarea>
   <p class="hint">Puedes pegar el token completo con o sin el prefijo "Bearer ".</p>
+  <label>Refresh token (opcional, para renovación automática)</label>
+  <textarea id="refresh" placeholder="v1.xxxxxxxx... (solo si vas a actualizarlo)"></textarea>
+  <p class="hint">Con esto el monitor renueva el bearer solo cada ~24h. Solo hace falta si el refresh_token actual dejó de funcionar.</p>
   <div class="row">
     <input type="password" id="secret" placeholder="PANEL_SECRET">
     <button onclick="guardar()">Guardar</button>
@@ -2484,13 +2574,14 @@ button:hover{background:#0284c7}
 <script>
 async function guardar(){
   const token=document.getElementById('token').value.trim();
+  const refresh=document.getElementById('refresh').value.trim();
   const secret=document.getElementById('secret').value.trim();
   const msg=document.getElementById('msg');
   msg.className='msg';msg.textContent='';
   if(!token){msg.className='msg err';msg.textContent='Pega el token primero.';return;}
   if(!secret){msg.className='msg err';msg.textContent='Ingresa el PANEL_SECRET.';return;}
   try{
-    const r=await fetch('/admin/token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bearer:token,secret})});
+    const r=await fetch('/admin/token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bearer:token,refresh_token:refresh,secret})});
     const d=await r.json();
     if(d.ok){msg.className='msg ok';msg.textContent='Token guardado. El próximo sync usará este token.';}
     else{msg.className='msg err';msg.textContent=d.error||'Error desconocido.';}
@@ -2512,6 +2603,8 @@ def admin_token_get():
         estado = "Usando token de variable de entorno CATALOGO_AUTH_BEARER (sin token persistido guardado aún)"
     else:
         estado = "Sin token configurado — el sync del catálogo fallará con 401"
+    refresh_actual = leer_refresh_token_persistido() or CATALOGO_REFRESH_TOKEN_ENV
+    estado += " · Renovación automática: " + ("activa" if refresh_actual else "sin refresh_token configurado")
     html = HTML_ADMIN_TOKEN.replace("{{ estado_actual }}", estado)
     return html
 
@@ -2531,6 +2624,9 @@ def admin_token_post():
         return jsonify({"ok": False, "error": "Token vacío"}), 400
     try:
         guardar_token_persistido(bearer)
+        refresh_token = str(data.get("refresh_token", "")).strip()
+        if refresh_token:
+            guardar_refresh_token_persistido(refresh_token)
         return jsonify({"ok": True})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
@@ -3499,6 +3595,7 @@ def loop_monitor():
     while True:
         try:
             sync_catalogo_desde_url(force=False)
+            verificar_token_por_vencer()
             procesar_comandos()
             monitorear()
             guardar_estado_persistido()
