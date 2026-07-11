@@ -2754,6 +2754,58 @@ def extraer_variantes(data):
     return resultado
 
 
+def extraer_buybox_offerlisting(texto_rsc, sku_id):
+    """Lee las ofertas del SKU exacto desde /tienda/mirakl/offerListing (página dedicada
+    a un solo SKU). El PDP general trae productos recomendados/cross-sell con su propio
+    "bestOffer" mezclado en el mismo HTML, lo que causaba falsos positivos/negativos al
+    buscar el primer match en toda la página. Aquí se ancla en "skuId":"<sku_id>" para el
+    ganador oficial de Liverpool, y se junta la lista completa de "offers":[...] (forma de
+    arreglo, no el resumen "offers":{"bestOffer":...}) para saber si PATISH tiene oferta."""
+    if not texto_rsc or not sku_id:
+        return None, None, []
+
+    ganador = None
+    anchor = f'"skuId":"{sku_id}"'
+    idx = texto_rsc.find(anchor)
+    if idx == -1:
+        return None, None, []
+
+    ventana = texto_rsc[idx:idx + 400]
+    m = re.search(r'"bestOfferSellerName"\s*:\s*"([^"]*)"', ventana)
+    if m and m.group(1):
+        ganador = m.group(1)
+
+    # Acotar la búsqueda de ofertas a este SKU: desde su ancla hasta el siguiente
+    # "skuId" distinto (variante hermana), para no mezclar sellers de otro color/talla.
+    siguiente_sku = re.search(r'"skuId":"(?!' + re.escape(sku_id) + r'")\d*"', texto_rsc[idx + len(anchor):])
+    fin = idx + len(anchor) + siguiente_sku.start() if siguiente_sku else len(texto_rsc)
+    tramo = texto_rsc[idx:fin]
+
+    ofertas = {}
+    for bloque in re.finditer(r'"offers":\[(.*?)\](?=[,}])', tramo, re.DOTALL):
+        for oferta in re.finditer(
+            r'"sellerId":"([^"]*)","sellerName":"([^"]*)"[^{}]*?"salePrice":(\d+(?:\.\d+)?)',
+            bloque.group(1),
+        ):
+            seller_id, seller_name, precio = oferta.groups()
+            if seller_id and seller_id not in ofertas:
+                ofertas[seller_id] = {"seller": seller_name, "sellerId": seller_id, "precio": precio}
+
+    lista_ofertas = list(ofertas.values())
+    precio_ganador = None
+    if ganador:
+        for o in lista_ofertas:
+            if limpiar_texto(o["seller"]).lower() == limpiar_texto(ganador).lower():
+                precio_ganador = o["precio"]
+                break
+    elif lista_ofertas:
+        lista_ofertas.sort(key=lambda o: normalizar_precio(o["precio"]) if normalizar_precio(o["precio"]) is not None else float("inf"))
+        ganador = lista_ofertas[0]["seller"]
+        precio_ganador = lista_ofertas[0]["precio"]
+
+    return ganador, precio_ganador, lista_ofertas
+
+
 def extraer_rsc_decoded(html_text):
     """Liverpool migró el PDP a Next.js App Router: ya no hay <script id="__NEXT_DATA__">,
     los datos viajan escapados dentro de self.__next_f.push([1,"...json string..."]).
@@ -3185,27 +3237,52 @@ def _fetch_pdp_variantes(url):
         if mapa:
             return mapa, _meta_api("PDP", r.status_code, confidence="pdp_bestoffer")
 
-        confidence = "pdp_legacy"
         seller, price, otros = extraer_buybox_legacy(r.text)
-        if not seller:
-            texto_rsc = extraer_rsc_decoded(r.text)
-            if texto_rsc:
-                seller, price, otros = extraer_buybox_legacy(texto_rsc)
-                confidence = "pdp_legacy_rsc"
+        if seller:
+            sku_match = re.search(r"[?&]skuid=(\d+)", url)
+            if sku_match:
+                sku_id = normalizar_identificador(sku_match.group(1))
+                ofertas = [{"seller": seller, "sellerId": "", "precio": formatear_precio(price), "stock": None}]
+                ofertas += [{"seller": o["seller"], "sellerId": "", "precio": formatear_precio(o["precio"]), "stock": None} for o in otros]
+                return {
+                    sku_id: {
+                        "skuId": sku_id,
+                        "buybox": {"seller": seller, "sellerId": "", "precio": formatear_precio(price), "stock": None},
+                        "offers": ofertas,
+                        "otros_sellers": otros,
+                        "sellersCount": len(ofertas),
+                    }
+                }, _meta_api("PDP", r.status_code, confidence="pdp_legacy")
+
+        # App Router: el sku exacto se lee de la página de ofertas dedicada (mirakl/offerListing),
+        # no del PDP general (que mezcla productos recomendados con su propio bestOffer).
         sku_match = re.search(r"[?&]skuid=(\d+)", url)
-        if seller and sku_match:
+        pid_match = re.search(r"/producto/([^?/]+)", url)
+        if sku_match and pid_match:
             sku_id = normalizar_identificador(sku_match.group(1))
-            ofertas = [{"seller": seller, "sellerId": "", "precio": formatear_precio(price), "stock": None}]
-            ofertas += [{"seller": o["seller"], "sellerId": "", "precio": formatear_precio(o["precio"]), "stock": None} for o in otros]
-            return {
-                sku_id: {
-                    "skuId": sku_id,
-                    "buybox": {"seller": seller, "sellerId": "", "precio": formatear_precio(price), "stock": None},
-                    "offers": ofertas,
-                    "otros_sellers": otros,
-                    "sellersCount": len(ofertas),
-                }
-            }, _meta_api("PDP", r.status_code, confidence=confidence)
+            product_id = pid_match.group(1)
+            url_ofertas = f"https://www.liverpool.com.mx/tienda/mirakl/offerListing?productId={product_id}&skuId={sku_id}"
+            try:
+                r2 = requests.get(url_ofertas, headers=HEADERS, timeout=20)
+            except Exception:
+                r2 = None
+            if r2 is not None and r2.status_code == 200:
+                texto_rsc = extraer_rsc_decoded(r2.text)
+                ganador, precio_ganador, ofertas_encontradas = extraer_buybox_offerlisting(texto_rsc, sku_id)
+                if ganador:
+                    ofertas = [
+                        {"seller": o["seller"], "sellerId": o.get("sellerId", ""), "precio": formatear_precio(o["precio"]), "stock": None}
+                        for o in ofertas_encontradas
+                    ] or [{"seller": ganador, "sellerId": "", "precio": formatear_precio(precio_ganador), "stock": None}]
+                    return {
+                        sku_id: {
+                            "skuId": sku_id,
+                            "buybox": {"seller": ganador, "sellerId": "", "precio": formatear_precio(precio_ganador), "stock": None},
+                            "offers": ofertas,
+                            "sellersCount": len(ofertas),
+                        }
+                    }, _meta_api("PDP", r2.status_code, confidence="pdp_offerlisting")
+
         return {}, _meta_api("PDP", r.status_code, "PDP sin variantes/bestOffer")
     except Exception as exc:
         return {}, _meta_api("PDP", error_message=f"pdp_error: {exc}")
