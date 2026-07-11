@@ -1806,7 +1806,9 @@ def construir_items_estado():
         else:
             estado_final = estado_monitor
         precio_tuyo = ULTIMO_PRECIO_PATISH[sku] if sku in ULTIMO_PRECIO_PATISH else ""
-        stock_tuyo = ULTIMO_STOCK_PATISH[sku] if sku in ULTIMO_STOCK_PATISH else normalizar_entero(variante.get("cantidad"))
+        stock_tuyo = ULTIMO_STOCK_PATISH.get(sku)
+        if stock_tuyo is None:
+            stock_tuyo = normalizar_entero(variante.get("cantidad"))
         precio_minimo = PRECIOS_MINIMOS.get(sku)
         item_estado = {
                 "sku_patish": sku,
@@ -3554,13 +3556,16 @@ def monitorear():
         else:
             ULTIMO_ESTADO[sku_patish] = nuevo_estado
         if nuevo_estado != "SIN_DATOS":
+            # Liverpool ya no expone el stock por seller en la página pública de ofertas;
+            # el stock propio se conoce de todos modos por el catálogo (columna Cantidad).
+            stock_mio_efectivo = r["stock_mio"] if r["stock_mio"] is not None else normalizar_entero(item.get("cantidad"))
             reprice_sugerido, reprice_motivo = calcular_reprice_sugerido(
-                nuevo_estado, price, r["precio_mio"], r["stock_mio"]
+                nuevo_estado, price, r["precio_mio"], stock_mio_efectivo
             )
             ULTIMO_PRECIO[sku_patish] = price
             ULTIMO_SELLER[sku_patish] = seller
             ULTIMO_PRECIO_PATISH[sku_patish] = r["precio_mio"]
-            ULTIMO_STOCK_PATISH[sku_patish] = r["stock_mio"]
+            ULTIMO_STOCK_PATISH[sku_patish] = stock_mio_efectivo
             ULTIMO_STOCK_GANADOR[sku_patish] = r.get("stock_ganador")
             ULTIMO_SEGUNDO_SELLER[sku_patish] = r.get("segundo_seller", "")
             ULTIMO_SEGUNDO_PRECIO[sku_patish] = r.get("segundo_precio", "")
