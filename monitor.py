@@ -1038,10 +1038,8 @@ function detalleVgcHtml(item){
   const sellersDominio={};
   estadosGrupo.forEach(x=>{const seller=x.seller_buybox||'Sin seller';sellersDominio[seller]=(sellersDominio[seller]||0)+1;});
   const sellerDominante=Object.entries(sellersDominio).sort((a,b)=>b[1]-a[1])[0]||['-',0];
-  let recomendacionVgc='Cobertura completa en catálogo.';
-  if((d.variantes_faltantes||0)>0){
-    recomendacionVgc=`Te faltan ${d.variantes_faltantes} variante(s); revisar si conviene agregarlas antes de bajar precio.`;
-  }else if(ventasPiezas>0 && estadosGrupo.some(x=>x.estado==='PERDIDO')){
+  let recomendacionVgc='No se puede verificar si faltan variantes (Liverpool ya no expone ese dato públicamente).';
+  if(ventasPiezas>0 && estadosGrupo.some(x=>x.estado==='PERDIDO')){
     recomendacionVgc='VGC con ventas recientes y pérdidas activas; priorizar recuperación de buybox.';
   }else if(!ventasPiezas){
     recomendacionVgc='Sin ventas recientes; revisar antes de competir agresivamente por precio.';
@@ -1068,7 +1066,6 @@ function detalleVgcHtml(item){
       error_message:estado?.error_message||''
     };
   }));
-  const faltantes=ordenarVgc(d.faltantes||[]);
   const rowsMias=mias.length?mias.map(v=>`<tr>
     <td>${escapeHtml(v.sku_liverpool||'-')}</td>
     <td>${escapeHtml(v.sku_patish||'-')}</td>
@@ -1080,17 +1077,10 @@ function detalleVgcHtml(item){
     <td>${v.stock_tuyo===0||v.stock_tuyo?escapeHtml(v.stock_tuyo):(v.stock===0||v.stock?escapeHtml(v.stock):'-')}</td>
     <td class="vgc-sim">${v.reprice_sugerido?money(v.reprice_sugerido):'-'}${v.reprice_motivo?`<div style="font-size:10px;color:#92400e">${escapeHtml(v.reprice_motivo)}</div>`:''}</td>
   </tr>`).join(''):'<tr><td colspan="9">No hay variantes tuyas detectadas en este VGC.</td></tr>';
-  const rowsFaltantes=faltantes.length?faltantes.map(v=>`<tr>
-    <td>${escapeHtml(v.sku_liverpool||'-')}</td>
-    <td>${escapeHtml(v.seller||'-')}</td>
-    <td>${money(v.precio)}</td>
-    <td>${v.stock===0||v.stock?escapeHtml(v.stock):'-'}</td>
-    <td>${escapeHtml(v.sellers_count??'-')}</td>
-  </tr>`).join(''):'<tr><td colspan="5">No se detectaron variantes faltantes.</td></tr>';
   return `<tr class="vgc-row"><td colspan="11">
     <div class="vgc-detail">
-      <h4>VGC ${escapeHtml(d.product_id||item.product_id||item.vgc||'-')} · ${escapeHtml(d.alerta_texto||'Detalle de variantes')}</h4>
-      <div class="muted">Tus SKUs en este VGC: ${escapeHtml(String(estadosGrupo.length||d.variantes_mias||'-'))}. Cobertura pública: ${escapeHtml(String(d.variantes_mias??'-'))}/${escapeHtml(String(d.total_variantes_liverpool??'-'))}. Faltantes: ${escapeHtml(String(d.variantes_faltantes??0))}.</div>
+      <h4>VGC ${escapeHtml(d.product_id||item.product_id||item.vgc||'-')} · Detalle de variantes</h4>
+      <div class="muted">Tus SKUs en este VGC: ${escapeHtml(String(estadosGrupo.length||d.variantes_mias||'-'))} (${escapeHtml(String(d.variantes_ganando??0))} ganando, ${escapeHtml(String(d.variantes_perdiendo??0))} perdiendo).</div>
       <div class="legend" style="margin:0 0 10px">
         <span class="legend-item"><strong>Ventas 30d</strong> ${escapeHtml(formatearNumero(ventasPiezas))} pzas · ${money(ventasMonto)}</span>
         <span class="legend-item"><strong>Seller dominante</strong> ${escapeHtml(sellerDominante[0])} (${escapeHtml(sellerDominante[1])} SKU)</span>
@@ -1108,10 +1098,6 @@ function detalleVgcHtml(item){
         <div class="vgc-box">
           <div class="vgc-box-title">Tus variantes</div>
           <table class="vgc-mini"><thead><tr><th>SKU Liverpool</th><th>SKU PATISH</th><th>Estado</th><th>Seller ganador</th><th>Precio ganador</th><th>Tu precio</th><th>Stock ganador</th><th>Stock tuyo</th><th>Simulación</th></tr></thead><tbody>${rowsMias}</tbody></table>
-        </div>
-        <div class="vgc-box">
-          <div class="vgc-box-title">Variantes que no tienes</div>
-          <table class="vgc-mini"><thead><tr><th>SKU Liverpool</th><th>Seller ganador</th><th>Precio</th><th>Stock visible</th><th>Sellers</th></tr></thead><tbody>${rowsFaltantes}</tbody></table>
         </div>
       </div>
     </div>
@@ -3276,106 +3262,45 @@ def calcular_reprice_sugerido(nuevo_estado, precio_ganador, precio_mio, stock_mi
     return formatear_precio(sugerido), f"Simulación: bajar ${mio - sugerido:.0f} para quedar ${REPRICER_STEP:.0f} abajo"
 
 
-def _resumen_vgc(product_id, items_grupo, alloffers_mapa):
-    items_catalogo = [
-        item for item in CATALOGO
-        if normalizar_identificador(item.get("product_id", "")) == product_id
-        or normalizar_identificador(item.get("vgc", "")) == product_id
-    ] or items_grupo
-    skus_mios = {normalizar_identificador(item.get("sku_liverpool", "")) for item in items_catalogo}
-    items_por_sku = {normalizar_identificador(item.get("sku_liverpool", "")): item for item in items_catalogo}
-    ofertas = []
-    for sku_id, oferta in alloffers_mapa.items():
-        if not isinstance(oferta, dict):
-            continue
-        precio = _precio_numero_oferta(oferta)
-        ofertas.append({
-            "sku_liverpool": sku_id,
-            "seller": limpiar_texto(oferta.get("bestSeller", "")),
-            "seller_id": normalizar_identificador(str(oferta.get("sellerId", ""))),
-            "precio": precio,
-            "precio_texto": formatear_precio(precio) if precio is not None else "",
-            "stock": obtener_stock_actual(oferta),
-            "sellers_count": oferta.get("sellersCount", 0),
-            "es_mio": sku_id in skus_mios,
-        })
-
-    if not ofertas:
-        return {
-            "product_id": product_id,
-            "alerta": False,
-            "total_variantes_liverpool": 0,
-            "variantes_mias": len(items_catalogo),
-            "variantes_faltantes": 0,
-        }
-
-    faltantes = [oferta for oferta in ofertas if not oferta["es_mio"]]
-    mias = [oferta for oferta in ofertas if oferta["es_mio"]]
+def _resumen_vgc(product_id, resultados):
+    """Cobertura de tus propias variantes (mismo producto, distinto color/talla).
+    allOffers (la API vieja que permitía ver variantes que NO son tuyas) está muerta desde la
+    migración de Liverpool. Se probó su reemplazo (offerColorSet/offerSizeSet del PDP) contra
+    el catálogo real y resultó incompleto/inconsistente en la mayoría de los productos -> no es
+    confiable para reportar "variantes faltantes" (daría falsos "sin faltantes"). Por eso este
+    resumen solo reporta lo que sí se puede verificar: tus propias variantes y su estado."""
     mias_detalle = []
-    for sku_id in sorted(skus_mios):
-        item = items_por_sku.get(sku_id, {})
-        oferta_publica = next((oferta for oferta in mias if oferta["sku_liverpool"] == sku_id), None)
-        precio_publico = oferta_publica.get("precio") if oferta_publica else None
+    for r in resultados:
+        item = r["item"]
         mias_detalle.append({
-            "sku_liverpool": sku_id,
-            "sku_patish": limpiar_texto(item.get("sku_patish", "")),
-            "estado_oferta": limpiar_texto(item.get("estado_oferta", "")),
+            "sku_liverpool": item.get("sku_liverpool", ""),
+            "sku_patish": item.get("sku_patish", ""),
+            "estado_oferta": r["nuevo_estado"],
             "stock": normalizar_entero(item.get("cantidad")),
-            "seller": oferta_publica.get("seller", "") if oferta_publica else "",
-            "precio": precio_publico,
-            "precio_texto": formatear_precio(precio_publico) if precio_publico is not None else "",
+            "seller": r.get("seller", ""),
+            "precio": normalizar_precio(r.get("price")),
+            "precio_texto": r.get("price", "") or "",
         })
-    faltantes_ordenadas = sorted(
-        faltantes,
-        key=lambda oferta: oferta["precio"] if oferta["precio"] is not None else float("inf"),
-    )
-    mias_con_precio = [oferta for oferta in mias if oferta["precio"] is not None]
-    precio_minimo_mio = min((oferta["precio"] for oferta in mias_con_precio), default=None)
-    faltante_barata = faltantes_ordenadas[0] if faltantes_ordenadas else None
+
+    ganando = sum(1 for m in mias_detalle if m["estado_oferta"] in ("GANANDO", "GANANDO_VERIFICADO"))
+    perdiendo = sum(1 for m in mias_detalle if m["estado_oferta"] == "PERDIDO")
 
     detalle = [
-        f"VGC {product_id}",
-        f"Cobertura: {len(mias)}/{len(ofertas)} variantes",
+        f"Producto {product_id}",
+        f"Tus variantes: {len(mias_detalle)} ({ganando} ganando, {perdiendo} perdiendo)",
         "",
     ]
-    if mias_detalle:
-        detalle.append("Tus variantes:")
-        for oferta in mias_detalle:
-            precio = f"${oferta['precio_texto']}" if oferta["precio_texto"] else "-"
-            detalle.append(f"- {oferta['sku_liverpool']} · {oferta['sku_patish']} · {oferta['estado_oferta']} · {oferta['seller'] or '-'} · {precio}")
-        detalle.append("")
-    if faltantes_ordenadas:
-        detalle.append("Variantes que no tienes:")
-        for oferta in faltantes_ordenadas[:12]:
-            precio = f"${oferta['precio_texto']}" if oferta["precio_texto"] else "-"
-            detalle.append(f"- {oferta['sku_liverpool']} · {oferta['seller'] or '-'} · {precio}")
-        if len(faltantes_ordenadas) > 12:
-            detalle.append(f"...y {len(faltantes_ordenadas) - 12} más")
-
-    diferencia = None
-    if faltante_barata and faltante_barata["precio"] is not None and precio_minimo_mio is not None:
-        diferencia = faltante_barata["precio"] - precio_minimo_mio
-
-    alerta = bool(faltantes)
-    alerta_texto = f"+{len(faltantes)} variantes" if alerta else ""
-    if faltante_barata and faltante_barata["precio_texto"]:
-        alerta_texto += f" · desde ${faltante_barata['precio_texto']}"
+    for m in mias_detalle:
+        precio = f"${m['precio_texto']}" if m["precio_texto"] else "-"
+        detalle.append(f"- {m['sku_liverpool']} · {m['sku_patish']} · {m['estado_oferta']} · {m['seller'] or '-'} · {precio}")
 
     return {
         "product_id": product_id,
-        "alerta": alerta,
-        "alerta_texto": alerta_texto,
         "detalle_texto": "\n".join(detalle),
-        "total_variantes_liverpool": len(ofertas),
-        "variantes_mias": len(items_catalogo),
-        "variantes_faltantes": len(faltantes),
-        "precio_minimo_mio": precio_minimo_mio,
-        "sku_variante_faltante_mas_barata": faltante_barata["sku_liverpool"] if faltante_barata else "",
-        "seller_variante_faltante_mas_barata": faltante_barata["seller"] if faltante_barata else "",
-        "precio_variante_faltante_mas_barata": faltante_barata["precio"] if faltante_barata else None,
-        "diferencia_vs_mi_precio": diferencia,
+        "variantes_mias": len(mias_detalle),
+        "variantes_ganando": ganando,
+        "variantes_perdiendo": perdiendo,
         "mias_detalle": mias_detalle,
-        "faltantes": faltantes_ordenadas[:20],
     }
 
 
@@ -3383,7 +3308,6 @@ def _procesar_grupo_producto(product_id, items_grupo):
     """Obtiene datos de buybox vía mirakl/offerListing (1 request por SKU). Thread-safe.
     allOffers/offersListing (APIs viejas de Liverpool) ya no existen (404 permanente desde su
     migración a Next.js App Router) -> ya no se llaman, solo agregaban tráfico muerto."""
-    RESUMEN_VGC[product_id] = _resumen_vgc(product_id, items_grupo, {})
 
     resultados = []
     for item in items_grupo:
@@ -3431,6 +3355,7 @@ def _procesar_grupo_producto(product_id, items_grupo):
 
         resultados.append({**base_result, "nuevo_estado": "SIN_DATOS", "seller": "", "price": ""})
 
+    RESUMEN_VGC[product_id] = _resumen_vgc(product_id, resultados)
     return resultados
 
 
@@ -3662,8 +3587,8 @@ def imprimir_resumen_local():
         "SIN_DATOS_STALE", "BLOQUEADA", "INACTIVA_STOCK",
     ]:
         print(f"{estado}: {conteos.get(estado, 0)}")
-    vgc_alertas = [resumen for resumen in RESUMEN_VGC.values() if resumen.get("alerta")]
-    print(f"VGC con variantes faltantes: {len(vgc_alertas)}")
+    vgc_con_perdidas = [resumen for resumen in RESUMEN_VGC.values() if resumen.get("variantes_perdiendo")]
+    print(f"VGC con variantes perdiendo: {len(vgc_con_perdidas)}")
     for vgc in ("1170197151", "1170196309"):
         relacionados = [item for item in items if str(item.get("vgc", "")) == vgc or str(item.get("sku_liverpool", "")) == vgc]
         print(f"\nVGC {vgc}:")
