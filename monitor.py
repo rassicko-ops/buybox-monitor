@@ -2579,7 +2579,7 @@ async function guardar(){
 </body></html>"""
 
 
-@app.route("/admin/token", methods=["GET"])
+@app.route("/admin/token", methods=["GET"], provide_automatic_options=False)
 def admin_token_get():
     if not PANEL_SECRET:
         return "PANEL_SECRET no configurado en Railway. Agrega esa variable de entorno primero.", 503
@@ -2597,27 +2597,49 @@ def admin_token_get():
     return html
 
 
-@app.route("/admin/token", methods=["POST"])
+CORS_ORIGENES_ADMIN_TOKEN = {
+    "https://marketplace.liverpool.com.mx",
+    "https://www.liverpool.com.mx",
+}
+
+
+def _con_cors_admin_token(response):
+    origen = request.headers.get("Origin", "")
+    if origen in CORS_ORIGENES_ADMIN_TOKEN:
+        response.headers["Access-Control-Allow-Origin"] = origen
+        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
+
+
+@app.route("/admin/token", methods=["OPTIONS"])
+def admin_token_options():
+    """Preflight CORS: permite que el bookmarklet de renovación (corre en el dominio de
+    Liverpool) guarde el token aquí sin que el navegador lo bloquee."""
+    return _con_cors_admin_token(jsonify({"ok": True}))
+
+
+@app.route("/admin/token", methods=["POST"], provide_automatic_options=False)
 def admin_token_post():
     if not PANEL_SECRET:
         return jsonify({"ok": False, "error": "PANEL_SECRET no configurado en Railway"}), 503
     try:
         data = request.get_json(force=True) or {}
     except Exception:
-        return jsonify({"ok": False, "error": "JSON inválido"}), 400
+        return _con_cors_admin_token(jsonify({"ok": False, "error": "JSON inválido"})), 400
     if data.get("secret", "") != PANEL_SECRET:
-        return jsonify({"ok": False, "error": "PANEL_SECRET incorrecto"}), 403
+        return _con_cors_admin_token(jsonify({"ok": False, "error": "PANEL_SECRET incorrecto"})), 403
     bearer = str(data.get("bearer", "")).strip()
     if not bearer:
-        return jsonify({"ok": False, "error": "Token vacío"}), 400
+        return _con_cors_admin_token(jsonify({"ok": False, "error": "Token vacío"})), 400
     try:
         guardar_token_persistido(bearer)
         refresh_token = str(data.get("refresh_token", "")).strip()
         if refresh_token:
             guardar_refresh_token_persistido(refresh_token)
-        return jsonify({"ok": True})
+        return _con_cors_admin_token(jsonify({"ok": True}))
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return _con_cors_admin_token(jsonify({"ok": False, "error": str(exc)})), 500
 
 
 @app.route("/status")
