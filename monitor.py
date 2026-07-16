@@ -1558,11 +1558,11 @@ def verificar_token_por_vencer():
     if edad_horas < TOKEN_PROACTIVO_HORAS or _TOKEN_PROACTIVO_AVISADO_PARA == guardado_at:
         return
     _TOKEN_PROACTIVO_AVISADO_PARA = guardado_at
-    panel_link = "/admin/token" if PANEL_SECRET else "la variable CATALOGO_AUTH_BEARER en Railway"
     enviar_telegram(
         "⏰ <b>Token de Liverpool por vencer</b>\n\n"
-        f"Lleva ~{edad_horas:.0f}h activo (dura ~24h). Renuévalo antes de que falle el sync automático.\n"
-        f"Panel: {panel_link}"
+        f"Lleva ~{edad_horas:.0f}h activo (dura ~24h). Dale clic al bookmarklet de renovación antes de que falle el sync.\n"
+        "Si el bookmarklet marca error o se queda pensando (pasa ~1 vez al mes): haz login manual con MFA en "
+        "marketplace.liverpool.com.mx una vez, y vuelve a usar el bookmarklet normal después de eso."
     )
 
 
@@ -1720,11 +1720,11 @@ def alertar_token_catalogo_expirado(exc):
     if CATALOGO_TOKEN_ALERT_LAST_TS and ahora - CATALOGO_TOKEN_ALERT_LAST_TS < intervalo:
         return
     CATALOGO_TOKEN_ALERT_LAST_TS = ahora
-    panel_link = " Renuévalo en el panel: /admin/token" if PANEL_SECRET else " Renueva CATALOGO_AUTH_BEARER en Railway."
     enviar_telegram(
         "⚠️ <b>Token de Liverpool vencido</b>\n\n"
         "No pude actualizar el catálogo automático desde Marketplace.\n"
-        f"{panel_link}\n\n"
+        "Dale clic al bookmarklet de renovación. Si marca error (pasa ~1 vez al mes): haz login manual con "
+        "MFA en marketplace.liverpool.com.mx una vez, y vuelve a usar el bookmarklet después de eso.\n\n"
         f"Error: {escapar(str(exc)[:220])}"
     )
 
