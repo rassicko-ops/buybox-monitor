@@ -2689,6 +2689,17 @@ def admin_telegram_status():
         resultado["getUpdates"] = r_updates.json()
     except Exception as exc:
         resultado["getUpdates_error"] = str(exc)
+    if request.args.get("enviar_prueba") == "1" and CHAT_ID:
+        try:
+            r_send = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json={"chat_id": CHAT_ID, "text": "🧪 Mensaje de prueba desde /admin/telegram-status"},
+                timeout=10,
+            )
+            resultado["send_status"] = r_send.status_code
+            resultado["send"] = r_send.json()
+        except Exception as exc:
+            resultado["send_error"] = str(exc)
     return jsonify(resultado)
 
 
