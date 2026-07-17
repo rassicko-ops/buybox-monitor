@@ -7,3 +7,5 @@ catalogo_sync_ultimo.xlsx
 estado_persistido.json
 ventas_monitor.db
 precios_minimos.json
+catalogo_auth.json
+catalogo_refresh_token.json

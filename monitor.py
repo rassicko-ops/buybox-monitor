@@ -2657,6 +2657,41 @@ def status():
     })
 
 
+@app.route("/admin/telegram-status")
+def admin_telegram_status():
+    """Diagnostico de conexion con Telegram sin exponer el token."""
+    if not TELEGRAM_TOKEN:
+        return jsonify({"ok": False, "error": "Falta TELEGRAM_TOKEN"})
+    resultado = {
+        "disable_telegram": DISABLE_TELEGRAM,
+        "chat_id_configurado": bool(CHAT_ID),
+        "ultimo_update_id": ULTIMO_UPDATE_ID,
+    }
+    try:
+        r_me = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMe", timeout=10)
+        resultado["getMe_status"] = r_me.status_code
+        resultado["getMe"] = r_me.json()
+    except Exception as exc:
+        resultado["getMe_error"] = str(exc)
+    try:
+        r_webhook = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getWebhookInfo", timeout=10)
+        resultado["webhook_status"] = r_webhook.status_code
+        resultado["webhook"] = r_webhook.json()
+    except Exception as exc:
+        resultado["webhook_error"] = str(exc)
+    try:
+        r_updates = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+            params={"offset": ULTIMO_UPDATE_ID + 1, "timeout": 0},
+            timeout=10,
+        )
+        resultado["getUpdates_status"] = r_updates.status_code
+        resultado["getUpdates"] = r_updates.json()
+    except Exception as exc:
+        resultado["getUpdates_error"] = str(exc)
+    return jsonify(resultado)
+
+
 # ================================
 # CSV
 # ================================
