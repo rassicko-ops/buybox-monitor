@@ -9,3 +9,5 @@ ventas_monitor.db
 precios_minimos.json
 catalogo_auth.json
 catalogo_refresh_token.json
+.DS_Store
+Documentos anexo al mail/

@@ -2919,6 +2919,19 @@ def extraer_buybox_offerlisting(texto_rsc, sku_id):
     return ganador, precio_ganador, lista_ofertas
 
 
+def extraer_vendedor_renderizado(html_text):
+    """Lee el "Vendido por: X" que Liverpool renderiza en el PDP -- es lo que ve el cliente,
+    y manda sobre "bestOfferSellerName" (que viaja aparte en el JSON embebido y puede quedar
+    desfasado). Confirmado en vivo: bestOfferSellerName decía PATISH mientras la página ya
+    mostraba "Vendido por: doto" -> falso positivo de GANANDO. Solo aparece una vez por
+    página (el producto principal, no los recomendados/cross-sell), así que no hay riesgo
+    de mezclar con otro producto."""
+    if not html_text:
+        return None
+    m = re.search(r'Vendido por:</p><a aria-label="([^"]*)"', html_text)
+    return limpiar_texto(m.group(1)) if m else None
+
+
 def extraer_rsc_decoded(html_text):
     """Liverpool migró el PDP a Next.js App Router: ya no hay <script id="__NEXT_DATA__">,
     los datos viajan escapados dentro de self.__next_f.push([1,"...json string..."]).
@@ -3219,26 +3232,36 @@ def _meta_api(source, status_code=None, error_message="", confidence=""):
 
 
 def _fetch_pdp_variantes(url):
-    """Lee las ofertas del SKU vía la página dedicada mirakl/offerListing (1 solo request;
-    antes se pedía primero el PDP general y luego esta página, el doble de tráfico por SKU)."""
+    """Lee las ofertas del SKU desde el PDP público (1 solo request). El "Vendido por"
+    renderizado en el HTML manda sobre bestOfferSellerName (puede ir desfasado); el arreglo
+    de ofertas con precio por seller se sigue leyendo del JSON embebido para saber si PATISH
+    tiene oferta y a qué precio, gane o no."""
     try:
         sku_match = re.search(r"[?&]skuid=(\d+)", url)
-        pid_match = re.search(r"/producto/([^?/]+)", url)
-        if not sku_match or not pid_match:
-            return {}, _meta_api("PDP", error_message="url sin sku/product_id")
+        if not sku_match:
+            return {}, _meta_api("PDP", error_message="url sin sku")
         sku_id = normalizar_identificador(sku_match.group(1))
-        product_id = pid_match.group(1)
-        url_ofertas = f"https://www.liverpool.com.mx/tienda/mirakl/offerListing?productId={product_id}&skuId={sku_id}"
-        r = requests.get(url_ofertas, headers=HEADERS, timeout=20)
+
+        r = requests.get(url, headers=HEADERS, timeout=20)
         if r.status_code == 404:
             return {}, _meta_api("PDP", 404, "PDP 404", "pdp_404")
         if r.status_code != 200:
             return {}, _meta_api("PDP", r.status_code, f"HTTP {r.status_code}")
 
         texto_rsc = extraer_rsc_decoded(r.text)
-        ganador, precio_ganador, ofertas_encontradas = extraer_buybox_offerlisting(texto_rsc, sku_id)
+        ganador_json, precio_ganador, ofertas_encontradas = extraer_buybox_offerlisting(texto_rsc, sku_id)
+        ganador_render = extraer_vendedor_renderizado(r.text)
+        ganador = ganador_render or ganador_json
         if not ganador:
             return {}, _meta_api("PDP", r.status_code, "PDP sin variantes/bestOffer")
+
+        if ganador_render and limpiar_texto(ganador_render).lower() != limpiar_texto(ganador_json or "").lower():
+            coincide = next(
+                (o for o in ofertas_encontradas if limpiar_texto(o["seller"]).lower() == ganador_render.lower()),
+                None,
+            )
+            if coincide:
+                precio_ganador = coincide["precio"]
 
         ofertas = [
             {"seller": o["seller"], "sellerId": o.get("sellerId", ""), "precio": formatear_precio(o["precio"]), "stock": None}
@@ -3251,7 +3274,7 @@ def _fetch_pdp_variantes(url):
                 "offers": ofertas,
                 "sellersCount": len(ofertas),
             }
-        }, _meta_api("PDP", r.status_code, confidence="pdp_offerlisting")
+        }, _meta_api("PDP", r.status_code, confidence="pdp_render" if ganador_render else "pdp_offerlisting")
     except Exception as exc:
         return {}, _meta_api("PDP", error_message=f"pdp_error: {exc}")
 
