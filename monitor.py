@@ -92,6 +92,9 @@ ULTIMO_REPRICE_SUGERIDO = {}
 ULTIMO_REPRICE_MOTIVO = {}
 RESUMEN_VGC = {}
 PRECIOS_MINIMOS = {}
+VGC_OVERRIDES = {}
+VGC_RESOLVER_FALLIDOS = {}
+VGC_RESOLVER_COOLDOWN_HORAS = 6
 VENTAS_CACHE = {"ts": 0, "dias": None, "data": {}}
 CATALOGO_SYNC_LOCK = threading.Lock()
 CATALOGO_SYNC_STATE = {
@@ -119,6 +122,7 @@ SKUS_FILE = os.path.join(DATA_DIR, "skus.csv")
 CATALOGO_FILE = os.path.join(DATA_DIR, "catalogo_activo.json")
 ESTADO_FILE = os.path.join(DATA_DIR, "estado_persistido.json")
 PRECIOS_MINIMOS_FILE = os.path.join(DATA_DIR, "precios_minimos.json")
+VGC_OVERRIDES_FILE = os.path.join(DATA_DIR, "vgc_overrides.json")
 VENTAS_DB_FILE = os.path.join(DATA_DIR, "ventas_monitor.db")
 PORT = int(os.getenv("PORT", "8080"))
 
@@ -384,8 +388,15 @@ a.lnk:hover{color:var(--primary)}
         <span class="fname" id="minimos-file-lbl">Ningún archivo seleccionado</span>
         <button class="btn btn-s" onclick="subirPreciosMinimos()">Cargar mínimos</button>
       </div>
+      <div class="urow" style="margin-top:10px">
+        <label class="flabel" for="vgc-input">Corregir URLs (Excel exportado a mano del portal)</label>
+        <input type="file" id="vgc-input" accept=".xlsx,.xls">
+        <span class="fname" id="vgc-file-lbl">Ningún archivo seleccionado</span>
+        <button class="btn btn-s" onclick="subirVgcOverrides()">Subir y corregir</button>
+      </div>
       <div class="umsg" id="msg-upload"></div>
       <div class="umsg" id="msg-minimos"></div>
+      <div class="umsg" id="msg-vgc"></div>
       <div class="sync-meta" id="catalog-sync-status">Catálogo automático: cargando estado...</div>
     </div>
   </div>
@@ -514,6 +525,9 @@ document.getElementById('excel-input').addEventListener('change',function(){
 document.getElementById('minimos-input').addEventListener('change',function(){
   document.getElementById('minimos-file-lbl').textContent=this.files[0]?.name||'Ningún archivo';
 });
+document.getElementById('vgc-input').addEventListener('change',function(){
+  document.getElementById('vgc-file-lbl').textContent=this.files[0]?.name||'Ningún archivo';
+});
 
 async function subirCatalogo(){
   const input=document.getElementById('excel-input');
@@ -548,6 +562,28 @@ async function subirPreciosMinimos(){
   }else{
     msg.className='umsg err';
     msg.textContent='Error mínimos: '+(d.error||'No se pudo cargar el archivo');
+  }
+}
+
+async function subirVgcOverrides(){
+  const input=document.getElementById('vgc-input');
+  const msg=document.getElementById('msg-vgc');
+  if(!input.files[0]){msg.className='umsg err';msg.textContent='Selecciona el Excel exportado del portal primero.';return;}
+  const fd=new FormData();fd.append('file',input.files[0]);
+  msg.className='umsg';msg.textContent='Corrigiendo URLs...';
+  try{
+    const resp=await fetch('/api/catalogo/vgc-overrides',{method:'POST',body:fd});
+    const d=await resp.json();
+    if(d.ok){
+      msg.className='umsg ok';
+      msg.textContent=`${d.vgc_encontrados} URLs corregidas (${d.total_overrides} en total). Catálogo re-sincronizado.`;
+      cargarEstado();
+    }else{
+      msg.className='umsg err';
+      msg.textContent='Error: '+(d.error||'No se pudo procesar el archivo');
+    }
+  }catch(e){
+    msg.className='umsg err';msg.textContent='Error: '+e;
   }
 }
 
@@ -1408,6 +1444,58 @@ def guardar_precios_minimos():
         json.dump(PRECIOS_MINIMOS, archivo, ensure_ascii=False, indent=2)
 
 
+def cargar_vgc_overrides():
+    if not os.path.exists(VGC_OVERRIDES_FILE):
+        return False
+    try:
+        with open(VGC_OVERRIDES_FILE, encoding="utf-8") as archivo:
+            data = json.load(archivo)
+        VGC_OVERRIDES.clear()
+        if isinstance(data, dict):
+            for sku, product_id in data.items():
+                pid = re.sub(r"[^0-9]", "", str(product_id or ""))
+                if len(pid) >= 8:
+                    VGC_OVERRIDES[limpiar_texto(sku)] = pid
+        return True
+    except Exception as exc:
+        print(f"⚠️ No se pudieron cargar VGC overrides: {exc}")
+        return False
+
+
+def guardar_vgc_overrides():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(VGC_OVERRIDES_FILE, "w", encoding="utf-8") as archivo:
+        json.dump(VGC_OVERRIDES, archivo, ensure_ascii=False, indent=2)
+
+
+def procesar_excel_vgc_overrides(excel_bytes):
+    """Lee un Excel exportado A MANO desde el portal de Liverpool (boton 'Exportar', login
+    normal del usuario -- nunca automatizado) solo para rescatar la columna VGC: el ID real
+    de navegacion del PDP para productos con variantes, que la API oficial (EUOFER-21) no
+    expone (ni product_sku ni multiOfferSku sirven para esos casos, confirmado contra
+    produccion). No reemplaza el catalogo -- solo corrige la URL de los SKUs que la API no
+    puede resolver."""
+    if excel_bytes[:2] == b"PK":
+        df = pd.read_excel(io.BytesIO(excel_bytes), engine="openpyxl")
+    elif excel_bytes[:4] == b"\xd0\xcf\x11\xe0":
+        df = pd.read_excel(io.BytesIO(excel_bytes), engine="xlrd")
+    else:
+        snippet = excel_bytes[:250].decode("utf-8", errors="replace").replace("\n", " ")
+        raise RuntimeError(f"El archivo no parece Excel. Primeros bytes: {snippet}")
+    df.columns = [normalizar_columna(columna) for columna in df.columns]
+
+    encontrados = 0
+    for _, row in df.iterrows():
+        sku_oferta = normalizar_identificador(row.get("sku de oferta"))
+        vgc = re.sub(r"[^0-9]", "", limpiar_texto(row.get("vgc")))
+        if not sku_oferta or len(vgc) < 8:
+            continue
+        VGC_OVERRIDES[sku_oferta] = vgc
+        encontrados += 1
+    guardar_vgc_overrides()
+    return encontrados
+
+
 def sku_base_desde_patish(sku):
     match = re.search(r"\b(\d{7})\b", limpiar_texto(sku))
     return match.group(1) if match else limpiar_texto(sku)
@@ -1591,10 +1679,13 @@ def procesar_catalogo_api(ofertas):
         estado_inicial = clasificar_estado_oferta(estado_oferta, motivo, cantidad)
 
         multi_offer_sku = normalizar_identificador(str(oferta.get("multiOfferSku") or ""))
-        # multiOfferSku es un ID interno de agrupacion de variantes (VGC), NO es navegable:
-        # armar la URL del PDP con el (da 404). El product_id real para la URL siempre es
-        # sku_producto (product_sku). Confirmado con curl contra Liverpool en produccion.
-        product_id = sku_producto
+        # multiOfferSku es un ID interno de agrupacion de variantes, NO es navegable (da 404).
+        # sku_producto (product_sku) SI funciona para productos de 1 sola variante, pero para
+        # productos con variantes (los reacondicionados sobre todo) tampoco resuelve -- Liverpool
+        # usa ahi un tercer ID de catalogo que EUOFER-21 no expone en ningun campo. Cuando existe,
+        # VGC_OVERRIDES (cargado de un Excel exportado a mano por el usuario, no automatizado)
+        # tiene el ID real para esos casos puntuales.
+        product_id = VGC_OVERRIDES.get(sku_oferta) or sku_producto
         url = f"https://www.liverpool.com.mx/tienda/pdp/producto/{product_id}?skuid={sku_producto}"
 
         nuevos.append(
@@ -2209,6 +2300,26 @@ def api_catalogo_sync():
     resultado = sync_catalogo_desde_url(force=True)
     status_code = 200 if resultado.get("ok") else 400
     return jsonify(resultado), status_code
+
+
+@app.route("/api/catalogo/vgc-overrides", methods=["POST"])
+def api_catalogo_vgc_overrides():
+    """Recibe el Excel de ofertas exportado A MANO desde el portal de Liverpool (login normal
+    del usuario, boton 'Exportar' -- nunca automatizado desde Railway) y rescata su columna VGC
+    para corregir el product_id de los SKUs con variantes que la API oficial no puede resolver.
+    No reemplaza el catalogo; re-sincroniza contra la API despues para aplicar el fix ya."""
+    if "file" not in request.files:
+        return jsonify({"ok": False, "error": "No se recibio archivo"}), 400
+    archivo = request.files["file"]
+    if not archivo.filename:
+        return jsonify({"ok": False, "error": "Archivo vacio"}), 400
+    try:
+        excel_bytes = archivo.read()
+        encontrados = procesar_excel_vgc_overrides(excel_bytes)
+        resultado = sync_catalogo_desde_url(force=True)
+        return jsonify({"ok": True, "vgc_encontrados": encontrados, "total_overrides": len(VGC_OVERRIDES), "sync": resultado})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @app.route("/api/catalogo/sync/status")
@@ -3236,6 +3347,29 @@ def _resumen_vgc(product_id, resultados):
     }
 
 
+def _resolver_product_id_via_busqueda(sku_producto, titulo):
+    """Busca en el buscador PUBLICO de Liverpool (sin login ni API key -- mismo tipo de trafico
+    que el monitor ya hace 24/7 contra paginas de producto) el product_id real para SKUs con
+    variantes que la API oficial no resuelve (ni product_sku ni multiOfferSku sirven ahi).
+    Solo acepta el match si encuentra el mismo skuid EXACTO en el resultado de busqueda -- si
+    no aparece, no adivina. Mejor dejar el SKU sin verificar que confundir productos."""
+    if not titulo or not sku_producto:
+        return None
+    try:
+        resp = requests.get(
+            "https://www.liverpool.com.mx/tienda",
+            params={"s": titulo},
+            headers=HEADERS,
+            timeout=15,
+        )
+    except Exception:
+        return None
+    if resp.status_code != 200:
+        return None
+    match = re.search(rf'pdp/[^"]+/(\d+)\?skuid={re.escape(sku_producto)}\b', resp.text)
+    return match.group(1) if match else None
+
+
 def _procesar_grupo_producto(product_id, items_grupo):
     """Obtiene datos de buybox vía mirakl/offerListing (1 request por SKU). Thread-safe.
     allOffers/offersListing (APIs viejas de Liverpool) ya no existen (404 permanente desde su
@@ -3246,6 +3380,26 @@ def _procesar_grupo_producto(product_id, items_grupo):
         sku_liverpool = normalizar_identificador(item["sku_liverpool"])
         pdp_mapa, pdp_meta = _fetch_pdp_variantes(item["url"])
         pdp_variante = pdp_mapa.get(sku_liverpool)
+
+        if not pdp_variante and pdp_meta.get("status_code") == 404:
+            sku_patish = item["sku_patish"]
+            if sku_patish not in VGC_OVERRIDES:
+                ultimo_fallo = VGC_RESOLVER_FALLIDOS.get(sku_patish)
+                debe_intentar = ultimo_fallo is None or (
+                    datetime.now(CDMX_TZ) - ultimo_fallo > timedelta(hours=VGC_RESOLVER_COOLDOWN_HORAS)
+                )
+                if debe_intentar:
+                    resuelto = _resolver_product_id_via_busqueda(sku_liverpool, item.get("producto", ""))
+                    if resuelto:
+                        VGC_OVERRIDES[sku_patish] = resuelto
+                        guardar_vgc_overrides()
+                        item["product_id"] = resuelto
+                        item["url"] = f"https://www.liverpool.com.mx/tienda/pdp/producto/{resuelto}?skuid={sku_liverpool}"
+                        pdp_mapa, pdp_meta = _fetch_pdp_variantes(item["url"])
+                        pdp_variante = pdp_mapa.get(sku_liverpool)
+                    else:
+                        VGC_RESOLVER_FALLIDOS[sku_patish] = datetime.now(CDMX_TZ)
+
         base_result = {
             "item": item, "sku_patish": item["sku_patish"],
             "otros": [], "precio_mio": "", "stock_mio": None,
@@ -3545,6 +3699,7 @@ if __name__ == "__main__":
         cargar_catalogo_compatibilidad()
 
     cargar_precios_minimos()
+    cargar_vgc_overrides()
     cargar_estado_persistido_monitor()
 
     if CATALOGO_SYNC_ON_START:
