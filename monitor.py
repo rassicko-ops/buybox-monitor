@@ -53,12 +53,14 @@ CSV_MAX_DIAS = int(os.getenv("CSV_MAX_DIAS", "30"))
 DISABLE_TELEGRAM = os.getenv("DISABLE_TELEGRAM", "").strip().lower() in {"1", "true", "yes", "si"}
 RUN_ONCE = os.getenv("RUN_ONCE", "").strip().lower() in {"1", "true", "yes", "si"}
 STALE_MINUTES = int(os.getenv("STALE_MINUTES", "30"))
-CATALOGO_EXCEL_URL = os.getenv("CATALOGO_EXCEL_URL", "").strip()
-CATALOGO_AUTH_BEARER = os.getenv("CATALOGO_AUTH_BEARER", "").strip()
+# Via oficial (API Key de Administracion de Ofertas -- EUOFER-21). Reemplaza el export por
+# Excel con el bearer de sesion de navegador: Liverpool advirtio que ese uso automatizado
+# de un endpoint interno con token de sesion arriesgaba el bloqueo de la cuenta.
+LIVERPOOL_API_KEY = os.getenv("LIVERPOOL_API_KEY", "").strip()
+LIVERPOOL_BASE_URL = os.getenv("LIVERPOOL_BASE_URL", "https://pro-api.liverpool.com.mx").strip().rstrip("/")
+LIVERPOOL_SHOP_ID = os.getenv("LIVERPOOL_SHOP_ID", "2370").strip()
 CATALOGO_SYNC_INTERVAL_HOURS = float(os.getenv("CATALOGO_SYNC_INTERVAL_HOURS", "24"))
 CATALOGO_SYNC_ON_START = os.getenv("CATALOGO_SYNC_ON_START", "").strip().lower() in {"1", "true", "yes", "si"}
-CATALOGO_TOKEN_ALERT_INTERVAL_HOURS = float(os.getenv("CATALOGO_TOKEN_ALERT_INTERVAL_HOURS", "6"))
-TOKEN_PROACTIVO_HORAS = float(os.getenv("TOKEN_PROACTIVO_HORAS", "20"))
 PANEL_SECRET = os.getenv("PANEL_SECRET", "").strip()
 REPRICER_STEP = float(os.getenv("REPRICER_STEP", "1"))
 
@@ -105,8 +107,6 @@ CATALOGO_SYNC_STATE = {
     "inactivas_stock": 0,
     "bloqueadas": 0,
 }
-CATALOGO_TOKEN_ALERT_LAST_TS = 0
-
 CATALOGO = []
 
 ULTIMO_RESUMEN = 0
@@ -118,14 +118,8 @@ CSV_FILE = os.path.join(DATA_DIR, "historico_buybox.csv")
 SKUS_FILE = os.path.join(DATA_DIR, "skus.csv")
 CATALOGO_FILE = os.path.join(DATA_DIR, "catalogo_activo.json")
 ESTADO_FILE = os.path.join(DATA_DIR, "estado_persistido.json")
-CATALOGO_SYNC_EXCEL_FILE = os.path.join(DATA_DIR, "catalogo_sync_ultimo.xlsx")
 PRECIOS_MINIMOS_FILE = os.path.join(DATA_DIR, "precios_minimos.json")
 VENTAS_DB_FILE = os.path.join(DATA_DIR, "ventas_monitor.db")
-CATALOGO_TOKEN_FILE = os.path.join(DATA_DIR, "catalogo_auth.json")
-CATALOGO_REFRESH_TOKEN_FILE = os.path.join(DATA_DIR, "catalogo_refresh_token.json")
-CATALOGO_REFRESH_TOKEN_ENV = os.getenv("CATALOGO_REFRESH_TOKEN", "").strip()
-LIVERPOOL_AUTH0_DOMAIN = "https://login-entradaunica.liverpool.com.mx"
-LIVERPOOL_AUTH0_CLIENT_ID = "vX4c873p5H4hWLBiLAFYqT9K491fLbTm"
 PORT = int(os.getenv("PORT", "8080"))
 
 app = Flask(__name__)
@@ -382,8 +376,7 @@ a.lnk:hover{color:var(--primary)}
         <input type="file" id="excel-input" accept=".xlsx,.xls">
         <span class="fname" id="file-name-lbl">Ningún archivo seleccionado</span>
         <button class="btn btn-p" onclick="subirCatalogo()">Actualizar catálogo</button>
-        <button class="btn btn-s" onclick="syncCatalogoUrl()">Actualizar desde URL</button>
-        <a class="btn btn-s" href="/api/catalogo/sync/download" target="_blank" rel="noreferrer">Descargar último auto-sync</a>
+        <button class="btn btn-s" onclick="syncCatalogoUrl()">Sincronizar ahora (API oficial)</button>
       </div>
       <div class="urow" style="margin-top:10px">
         <label class="flabel" for="minimos-input">Subir precios mínimos</label>
@@ -394,7 +387,6 @@ a.lnk:hover{color:var(--primary)}
       <div class="umsg" id="msg-upload"></div>
       <div class="umsg" id="msg-minimos"></div>
       <div class="sync-meta" id="catalog-sync-status">Catálogo automático: cargando estado...</div>
-      <div style="margin-top:8px"><a href="/admin/token" target="_blank" rel="noreferrer" style="font-size:12px;color:#0ea5e9;text-decoration:none">🔑 Renovar token Liverpool</a></div>
     </div>
   </div>
 
@@ -585,8 +577,8 @@ async function cargarCatalogoSyncStatus(){
     const resp=await fetch('/api/catalogo/sync/status');
     const d=await resp.json();
     const el=document.getElementById('catalog-sync-status');
-    const cfg=d.configured?'configurada':'sin CATALOGO_EXCEL_URL';
-    const auth=d.configured?(d.auth_configured?' · token configurado':' · falta token'):'';
+    const cfg=d.configured?'API oficial configurada':'falta LIVERPOOL_API_KEY';
+    const auth='';
     const last=d.last_sync_at?` · última OK: ${d.last_sync_at}`:' · sin sync automático aún';
     let err='';
     if(d.error){
@@ -1333,7 +1325,7 @@ def clasificar_estado_oferta(estado_oferta, motivo, cantidad):
     except (TypeError, ValueError):
         cantidad_num = 0
 
-    if "restricción de oferta" in motivo_texto:
+    if "restricción de oferta" in motivo_texto or "offer restriction" in motivo_texto:
         return "BLOQUEADA"
     if cantidad_num <= 0:
         return "INACTIVA_STOCK"
@@ -1528,211 +1520,82 @@ def aplicar_catalogo_nuevo(nuevos, source="manual"):
     }
 
 
-def leer_token_persistido_info():
-    try:
-        with open(CATALOGO_TOKEN_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def leer_token_persistido():
-    return str(leer_token_persistido_info().get("bearer", "")).strip()
-
-
-_TOKEN_PROACTIVO_AVISADO_PARA = ""
-
-
-def verificar_token_por_vencer():
-    """Avisa por Telegram ANTES de que el bearer expire (~24h), no solo cuando ya falló el sync."""
-    global _TOKEN_PROACTIVO_AVISADO_PARA
-    info = leer_token_persistido_info()
-    guardado_at = info.get("guardado_at", "")
-    if not guardado_at or not info.get("bearer"):
-        return
-    try:
-        guardado_dt = datetime.strptime(guardado_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=CDMX_TZ)
-    except Exception:
-        return
-    edad_horas = (datetime.now(CDMX_TZ) - guardado_dt).total_seconds() / 3600
-    if edad_horas < TOKEN_PROACTIVO_HORAS or _TOKEN_PROACTIVO_AVISADO_PARA == guardado_at:
-        return
-    _TOKEN_PROACTIVO_AVISADO_PARA = guardado_at
-    enviar_telegram(
-        "⏰ <b>Token de Liverpool por vencer</b>\n\n"
-        f"Lleva ~{edad_horas:.0f}h activo (dura ~24h). Dale clic al bookmarklet de renovación antes de que falle el sync.\n"
-        "Si el bookmarklet marca error o se queda pensando (pasa ~1 vez al mes): haz login manual con MFA en "
-        "marketplace.liverpool.com.mx una vez, y vuelve a usar el bookmarklet normal después de eso."
-    )
-
-
-def guardar_token_persistido(bearer):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(CATALOGO_TOKEN_FILE, "w") as f:
-        json.dump({"bearer": bearer, "guardado_at": datetime.now(CDMX_TZ).strftime("%Y-%m-%d %H:%M:%S")}, f)
-
-
-def leer_refresh_token_persistido():
-    try:
-        with open(CATALOGO_REFRESH_TOKEN_FILE, "r") as f:
-            data = json.load(f)
-        return data.get("refresh_token", "").strip()
-    except Exception:
-        return ""
-
-
-def guardar_refresh_token_persistido(refresh_token):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(CATALOGO_REFRESH_TOKEN_FILE, "w") as f:
-        json.dump({"refresh_token": refresh_token, "guardado_at": datetime.now(CDMX_TZ).strftime("%Y-%m-%d %H:%M:%S")}, f)
-
-
-def renovar_token_liverpool():
-    """Pide un access_token nuevo con el refresh_token guardado (Auth0, scope offline_access),
-    sin depender de que alguien vuelva a iniciar sesión manualmente cada ~24h.
-    Auth0 puede rotar el refresh_token en cada uso -> siempre se guarda el que venga en la
-    respuesta (o se reutiliza el mismo si no rotó)."""
-    refresh_token = leer_refresh_token_persistido() or CATALOGO_REFRESH_TOKEN_ENV
-    if not refresh_token:
-        return False
-    try:
-        resp = requests.post(
-            f"{LIVERPOOL_AUTH0_DOMAIN}/oauth/token",
-            json={
-                "grant_type": "refresh_token",
-                "client_id": LIVERPOOL_AUTH0_CLIENT_ID,
-                "refresh_token": refresh_token,
-            },
-            timeout=20,
+def descargar_catalogo_api():
+    """Trae TODAS las ofertas de la tienda via EUOFER-21 (API oficial de Administracion de
+    Ofertas, autenticada con API Key fija). Reemplaza el export por Excel con el bearer de
+    sesion de navegador -- Liverpool advirtio que ese uso automatizado de un endpoint interno
+    con token de sesion arriesgaba el bloqueo de la cuenta."""
+    if not LIVERPOOL_API_KEY:
+        raise RuntimeError("Falta LIVERPOOL_API_KEY")
+    headers = {"apikey": LIVERPOOL_API_KEY}
+    ofertas = []
+    page = 0
+    max_page_size = 100
+    while True:
+        resp = requests.get(
+            f"{LIVERPOOL_BASE_URL}/api/offermanagement/offers/shops/{LIVERPOOL_SHOP_ID}",
+            headers=headers,
+            params={"max": max_page_size, "page": page},
+            timeout=60,
         )
         resp.raise_for_status()
         data = resp.json()
-        nuevo_access = data.get("access_token")
-        if not nuevo_access:
-            return False
-        guardar_token_persistido(f"Bearer {nuevo_access}")
-        guardar_refresh_token_persistido(data.get("refresh_token") or refresh_token)
-        print("🔄 Token de Liverpool renovado automáticamente")
-        return True
-    except Exception as exc:
-        print(f"⚠️ No se pudo renovar token automáticamente: {exc}")
-        return False
+        lote = data.get("offers", [])
+        ofertas.extend(lote)
+        total = data.get("total_count", len(ofertas))
+        if len(lote) < max_page_size or len(ofertas) >= total:
+            break
+        page += 1
+    return ofertas
 
 
-def descargar_catalogo_excel():
-    if not CATALOGO_EXCEL_URL:
-        raise RuntimeError("Falta CATALOGO_EXCEL_URL")
-    headers = {
-        **HEADERS,
-        "Accept": "application/json, text/plain, */*",
-        "Origin": "https://marketplace.liverpool.com.mx",
-        "Referer": "https://marketplace.liverpool.com.mx/",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-    }
-    token = leer_token_persistido() or CATALOGO_AUTH_BEARER
-    if token:
-        headers["Authorization"] = token if token.lower().startswith("bearer ") else f"Bearer {token}"
-    respuesta = requests.get(CATALOGO_EXCEL_URL, headers=headers, timeout=90, allow_redirects=True)
-    respuesta.raise_for_status()
-    content_type = limpiar_texto(respuesta.headers.get("content-type", "")).lower()
-    contenido = respuesta.content
-    if contenido[:2] == b"PK" or contenido[:4] == b"\xd0\xcf\x11\xe0":
-        return contenido
+def procesar_catalogo_api(ofertas):
+    nuevos = []
+    for oferta in ofertas:
+        sku_oferta = normalizar_identificador(oferta.get("offer_sku"))
+        sku_producto = normalizar_identificador(oferta.get("product_sku"))
+        if sku_oferta.startswith("Eliminado_") or not sku_oferta or not sku_producto:
+            continue
 
-    texto_base64 = contenido.strip()
-    if texto_base64.startswith(b"UEsD"):
-        try:
-            decoded = base64.b64decode(texto_base64, validate=True)
-            if decoded[:2] == b"PK" or decoded[:4] == b"\xd0\xcf\x11\xe0":
-                return decoded
-        except Exception:
-            pass
+        producto = limpiar_texto(oferta.get("product_title"))
+        estado_oferta = "ACTIVA" if limpiar_texto(oferta.get("state_code")).upper() == "ACTIVE" else "INACTIVA"
+        motivo = ", ".join(limpiar_texto(r) for r in (oferta.get("inactivity_reasons") or []))
+        # "price" es el precio techo/lista; el precio real de venta (el que compite en el
+        # BuyBox) es discount.discount_price cuando hay descuento activo.
+        descuento = oferta.get("discount") or {}
+        precio_base = normalizar_precio(descuento.get("discount_price"))
+        if precio_base is None:
+            precio_base = normalizar_precio(oferta.get("price"))
+        cantidad = normalizar_entero(oferta.get("quantity")) or 0
 
-    # Algunos exports responden JSON con URL firmada o contenido base64.
-    data = None
-    if "json" in content_type or contenido[:1] in (b"{", b"["):
-        try:
-            data = respuesta.json()
-        except Exception:
-            data = None
+        estado_inicial = clasificar_estado_oferta(estado_oferta, motivo, cantidad)
 
-    def walk_json(obj):
-        if isinstance(obj, dict):
-            for key, value in obj.items():
-                yield key, value
-                yield from walk_json(value)
-        elif isinstance(obj, list):
-            for value in obj:
-                yield from walk_json(value)
+        multi_offer_sku = normalizar_identificador(str(oferta.get("multiOfferSku") or ""))
+        product_id = multi_offer_sku if len(multi_offer_sku) >= 8 else sku_producto
+        url = f"https://www.liverpool.com.mx/tienda/pdp/producto/{product_id}?skuid={sku_producto}"
 
-    if data is not None:
-        for key, value in walk_json(data):
-            key_l = str(key).lower()
-            if isinstance(value, str) and value.startswith("http") and any(p in key_l for p in ("url", "link", "download", "file")):
-                r2 = requests.get(value, headers=headers, timeout=90, allow_redirects=True)
-                r2.raise_for_status()
-                if r2.content[:2] == b"PK" or r2.content[:4] == b"\xd0\xcf\x11\xe0":
-                    return r2.content
-            if isinstance(value, str) and any(p in key_l for p in ("base64", "content", "file")):
-                try:
-                    decoded = base64.b64decode(value, validate=True)
-                    if decoded[:2] == b"PK" or decoded[:4] == b"\xd0\xcf\x11\xe0":
-                        return decoded
-                except Exception:
-                    pass
-
-    debug_path = os.path.join(DATA_DIR, "catalogo_sync_debug.bin")
-    try:
-        with open(debug_path, "wb") as f:
-            f.write(contenido[:5000])
-    except Exception:
-        pass
-    snippet = contenido[:300].decode("utf-8", errors="replace").replace("\n", " ")
-    raise RuntimeError(f"La descarga no parece Excel ({content_type or 'sin content-type'}). Debug: {debug_path}. Inicio: {snippet}")
-
-
-def es_error_token_catalogo_expirado(exc):
-    response = getattr(exc, "response", None)
-    if response is not None and response.status_code in (401, 403):
-        return True
-    texto = str(exc).lower()
-    return "401" in texto or "unauthorized" in texto or "token" in texto and "expir" in texto
-
-
-def tipo_error_catalogo(exc):
-    if es_error_token_catalogo_expirado(exc):
-        return "token"
-    if isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
-        return "red_dns"
-    texto = str(exc).lower()
-    if any(p in texto for p in ("nameresolutionerror", "failed to resolve", "temporary failure", "connectionpool", "max retries", "timed out", "timeout")):
-        return "red_dns"
-    if any(p in texto for p in ("no parece excel", "file is not a zip", "excel file format")):
-        return "archivo"
-    return "otro"
-
-
-def alertar_token_catalogo_expirado(exc):
-    global CATALOGO_TOKEN_ALERT_LAST_TS
-    ahora = time.time()
-    intervalo = CATALOGO_TOKEN_ALERT_INTERVAL_HOURS * 3600
-    if CATALOGO_TOKEN_ALERT_LAST_TS and ahora - CATALOGO_TOKEN_ALERT_LAST_TS < intervalo:
-        return
-    CATALOGO_TOKEN_ALERT_LAST_TS = ahora
-    enviar_telegram(
-        "⚠️ <b>Token de Liverpool vencido</b>\n\n"
-        "No pude actualizar el catálogo automático desde Marketplace.\n"
-        "Dale clic al bookmarklet de renovación. Si marca error (pasa ~1 vez al mes): haz login manual con "
-        "MFA en marketplace.liverpool.com.mx una vez, y vuelve a usar el bookmarklet después de eso.\n\n"
-        f"Error: {escapar(str(exc)[:220])}"
-    )
+        nuevos.append(
+            {
+                "sku_patish": sku_oferta,
+                "sku_liverpool": sku_producto,
+                "product_id": product_id,
+                "vgc": multi_offer_sku,
+                "producto": producto,
+                "estado_oferta": estado_inicial,
+                "motivo": motivo,
+                "precio_base": precio_base,
+                "cantidad": cantidad,
+                "url": url,
+                "color": "",
+                "size": "",
+            }
+        )
+    return nuevos
 
 
 def sync_catalogo_desde_url(force=False):
-    global CATALOGO_TOKEN_ALERT_LAST_TS
-    if not CATALOGO_EXCEL_URL:
-        return {"ok": False, "error": "Falta CATALOGO_EXCEL_URL", "configured": False}
+    if not LIVERPOOL_API_KEY:
+        return {"ok": False, "error": "Falta LIVERPOOL_API_KEY", "configured": False}
     if not force and CATALOGO_SYNC_STATE.get("last_sync_at"):
         try:
             last = datetime.strptime(CATALOGO_SYNC_STATE["last_sync_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=CDMX_TZ)
@@ -1742,37 +1605,24 @@ def sync_catalogo_desde_url(force=False):
             pass
     if not CATALOGO_SYNC_LOCK.acquire(blocking=False):
         return {"ok": False, "error": "Sync de catálogo ya está corriendo", "configured": True}
-    ya_renovo = False
     try:
-        while True:
-            CATALOGO_SYNC_STATE["last_attempt_at"] = datetime.now(CDMX_TZ).strftime("%Y-%m-%d %H:%M:%S")
-            try:
-                excel_bytes = descargar_catalogo_excel()
-                os.makedirs(DATA_DIR, exist_ok=True)
-                with open(CATALOGO_SYNC_EXCEL_FILE, "wb") as f:
-                    f.write(excel_bytes)
-                nuevos = procesar_excel_catalogo(excel_bytes)
-                resumen = aplicar_catalogo_nuevo(nuevos, source="url")
-                CATALOGO_TOKEN_ALERT_LAST_TS = 0
-                print(f"📦 Catálogo auto-sync OK: {resumen['total']} variantes ({resumen['activas']} activas)")
-                return {"ok": True, "configured": True, **resumen, **CATALOGO_SYNC_STATE}
-            except Exception as exc:
-                error_type = tipo_error_catalogo(exc)
-                if error_type == "token" and not ya_renovo and renovar_token_liverpool():
-                    ya_renovo = True
-                    continue
-                error_at = datetime.now(CDMX_TZ).strftime("%Y-%m-%d %H:%M:%S")
-                CATALOGO_SYNC_STATE.update({
-                    "ok": False,
-                    "error": str(exc),
-                    "error_type": error_type,
-                    "last_error_at": error_at,
-                    "source": "url",
-                })
-                print(f"⚠️ Catálogo auto-sync error: {exc}")
-                if error_type == "token":
-                    alertar_token_catalogo_expirado(exc)
-                return {"ok": False, "configured": True, "error": str(exc), **CATALOGO_SYNC_STATE}
+        CATALOGO_SYNC_STATE["last_attempt_at"] = datetime.now(CDMX_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            ofertas = descargar_catalogo_api()
+            nuevos = procesar_catalogo_api(ofertas)
+            resumen = aplicar_catalogo_nuevo(nuevos, source="api")
+            print(f"📦 Catálogo auto-sync OK (API oficial): {resumen['total']} variantes ({resumen['activas']} activas)")
+            return {"ok": True, "configured": True, **resumen, **CATALOGO_SYNC_STATE}
+        except Exception as exc:
+            error_at = datetime.now(CDMX_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            CATALOGO_SYNC_STATE.update({
+                "ok": False,
+                "error": str(exc),
+                "last_error_at": error_at,
+                "source": "api",
+            })
+            print(f"⚠️ Catálogo auto-sync error: {exc}")
+            return {"ok": False, "configured": True, "error": str(exc), **CATALOGO_SYNC_STATE}
     finally:
         CATALOGO_SYNC_LOCK.release()
 
@@ -2269,25 +2119,12 @@ def api_catalogo_sync():
 @app.route("/api/catalogo/sync/status")
 def api_catalogo_sync_status():
     return jsonify({
-        "configured": bool(CATALOGO_EXCEL_URL),
-        "auth_configured": bool(leer_token_persistido() or CATALOGO_AUTH_BEARER),
-        "token_source": "persistido" if leer_token_persistido() else ("env" if CATALOGO_AUTH_BEARER else "ninguno"),
+        "configured": bool(LIVERPOOL_API_KEY),
+        "auth_configured": bool(LIVERPOOL_API_KEY),
+        "source": "api_oficial_euofer21",
         "interval_hours": CATALOGO_SYNC_INTERVAL_HOURS,
-        "download_available": os.path.exists(CATALOGO_SYNC_EXCEL_FILE),
         **CATALOGO_SYNC_STATE,
     })
-
-
-@app.route("/api/catalogo/sync/download")
-def api_catalogo_sync_download():
-    if not os.path.exists(CATALOGO_SYNC_EXCEL_FILE):
-        return jsonify({"ok": False, "error": "No hay archivo de auto-sync descargado todavía"}), 404
-    return send_file(
-        CATALOGO_SYNC_EXCEL_FILE,
-        as_attachment=True,
-        download_name=f"catalogo_sync_{datetime.now(CDMX_TZ).strftime('%Y%m%d_%H%M%S')}.xlsx",
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
 
 
 @app.route("/api/estado")
@@ -2516,130 +2353,6 @@ def api_exportar_acciones():
     salida.seek(0)
     return send_file(salida, as_attachment=True, download_name=nombre_archivo,
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-
-HTML_ADMIN_TOKEN = """<!DOCTYPE html>
-<html lang="es">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Renovar token Liverpool</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f1f5f9;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
-.card{background:#fff;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,.08);padding:32px;max-width:520px;width:100%}
-h1{font-size:18px;font-weight:700;color:#0f172a;margin-bottom:6px}
-p{font-size:13px;color:#64748b;margin-bottom:20px;line-height:1.5}
-label{font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:6px}
-textarea{width:100%;min-height:130px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;font-size:12px;font-family:monospace;resize:vertical;outline:none}
-textarea:focus{border-color:#0ea5e9;box-shadow:0 0 0 3px rgba(14,165,233,.15)}
-.row{display:flex;gap:10px;margin-top:16px;align-items:center}
-input[type=password]{flex:1;padding:9px 12px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;outline:none}
-input[type=password]:focus{border-color:#0ea5e9;box-shadow:0 0 0 3px rgba(14,165,233,.15)}
-button{background:#0ea5e9;color:#fff;border:none;border-radius:8px;padding:10px 22px;font-size:14px;font-weight:600;cursor:pointer}
-button:hover{background:#0284c7}
-.msg{margin-top:16px;padding:10px 14px;border-radius:8px;font-size:13px;display:none}
-.msg.ok{background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;display:block}
-.msg.err{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;display:block}
-.hint{font-size:11px;color:#94a3b8;margin-top:8px}
-.current{margin-top:20px;padding:10px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;font-size:12px;color:#475569}
-</style></head>
-<body>
-<div class="card">
-  <h1>🔑 Renovar token Liverpool</h1>
-  <p>Pega aquí el Bearer token que copiaste de DevTools en Marketplace Liverpool. El monitor lo usará de inmediato sin necesidad de reiniciar.</p>
-  <label>Nuevo Bearer token</label>
-  <textarea id="token" placeholder="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."></textarea>
-  <p class="hint">Puedes pegar el token completo con o sin el prefijo "Bearer ".</p>
-  <label>Refresh token (opcional, para renovación automática)</label>
-  <textarea id="refresh" placeholder="v1.xxxxxxxx... (solo si vas a actualizarlo)"></textarea>
-  <p class="hint">Con esto el monitor renueva el bearer solo cada ~24h. Solo hace falta si el refresh_token actual dejó de funcionar.</p>
-  <div class="row">
-    <input type="password" id="secret" placeholder="PANEL_SECRET">
-    <button onclick="guardar()">Guardar</button>
-  </div>
-  <div id="msg" class="msg"></div>
-  <div class="current">{{ estado_actual }}</div>
-</div>
-<script>
-async function guardar(){
-  const token=document.getElementById('token').value.trim();
-  const refresh=document.getElementById('refresh').value.trim();
-  const secret=document.getElementById('secret').value.trim();
-  const msg=document.getElementById('msg');
-  msg.className='msg';msg.textContent='';
-  if(!token){msg.className='msg err';msg.textContent='Pega el token primero.';return;}
-  if(!secret){msg.className='msg err';msg.textContent='Ingresa el PANEL_SECRET.';return;}
-  try{
-    const r=await fetch('/admin/token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bearer:token,refresh_token:refresh,secret})});
-    const d=await r.json();
-    if(d.ok){msg.className='msg ok';msg.textContent='Token guardado. El próximo sync usará este token.';}
-    else{msg.className='msg err';msg.textContent=d.error||'Error desconocido.';}
-  }catch(e){msg.className='msg err';msg.textContent='Error de red: '+e;}
-}
-</script>
-</body></html>"""
-
-
-@app.route("/admin/token", methods=["GET"], provide_automatic_options=False)
-def admin_token_get():
-    if not PANEL_SECRET:
-        return "PANEL_SECRET no configurado en Railway. Agrega esa variable de entorno primero.", 503
-    token_actual = leer_token_persistido()
-    if token_actual:
-        preview = token_actual[:16] + "..." + token_actual[-8:]
-        estado = f"Token persistido activo: {preview}"
-    elif CATALOGO_AUTH_BEARER:
-        estado = "Usando token de variable de entorno CATALOGO_AUTH_BEARER (sin token persistido guardado aún)"
-    else:
-        estado = "Sin token configurado — el sync del catálogo fallará con 401"
-    refresh_actual = leer_refresh_token_persistido() or CATALOGO_REFRESH_TOKEN_ENV
-    estado += " · Renovación automática: " + ("activa" if refresh_actual else "sin refresh_token configurado")
-    html = HTML_ADMIN_TOKEN.replace("{{ estado_actual }}", estado)
-    return html
-
-
-CORS_ORIGENES_ADMIN_TOKEN = {
-    "https://marketplace.liverpool.com.mx",
-    "https://www.liverpool.com.mx",
-}
-
-
-def _con_cors_admin_token(response):
-    origen = request.headers.get("Origin", "")
-    if origen in CORS_ORIGENES_ADMIN_TOKEN:
-        response.headers["Access-Control-Allow-Origin"] = origen
-        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    return response
-
-
-@app.route("/admin/token", methods=["OPTIONS"])
-def admin_token_options():
-    """Preflight CORS: permite que el bookmarklet de renovación (corre en el dominio de
-    Liverpool) guarde el token aquí sin que el navegador lo bloquee."""
-    return _con_cors_admin_token(jsonify({"ok": True}))
-
-
-@app.route("/admin/token", methods=["POST"], provide_automatic_options=False)
-def admin_token_post():
-    if not PANEL_SECRET:
-        return jsonify({"ok": False, "error": "PANEL_SECRET no configurado en Railway"}), 503
-    try:
-        data = request.get_json(force=True) or {}
-    except Exception:
-        return _con_cors_admin_token(jsonify({"ok": False, "error": "JSON inválido"})), 400
-    if data.get("secret", "") != PANEL_SECRET:
-        return _con_cors_admin_token(jsonify({"ok": False, "error": "PANEL_SECRET incorrecto"})), 403
-    bearer = str(data.get("bearer", "")).strip()
-    if not bearer:
-        return _con_cors_admin_token(jsonify({"ok": False, "error": "Token vacío"})), 400
-    try:
-        guardar_token_persistido(bearer)
-        refresh_token = str(data.get("refresh_token", "")).strip()
-        if refresh_token:
-            guardar_refresh_token_persistido(refresh_token)
-        return _con_cors_admin_token(jsonify({"ok": True}))
-    except Exception as exc:
-        return _con_cors_admin_token(jsonify({"ok": False, "error": str(exc)})), 500
 
 
 @app.route("/status")
@@ -3616,7 +3329,6 @@ def loop_monitor():
     while True:
         try:
             sync_catalogo_desde_url(force=False)
-            verificar_token_por_vencer()
             procesar_comandos()
             monitorear()
             guardar_estado_persistido()
