@@ -821,6 +821,26 @@ function domIdSku(value){
   return String(value||'').replace(/[^a-zA-Z0-9_-]/g,'_');
 }
 
+async function aplicarReprice(skuPatish){
+  const btn=document.getElementById(`reprice-btn-${domIdSku(skuPatish)}`);
+  if(!confirm(`Vas a bajar el precio real de ${skuPatish} en Liverpool. ¿Aplicar?`)) return;
+  if(btn){btn.disabled=true;btn.textContent='Aplicando...';}
+  try{
+    const resp=await fetch(`/api/sku/${encodeURIComponent(skuPatish)}/reprice`,{method:'POST'});
+    const d=await resp.json();
+    if(!d.ok){
+      alert(d.error||'No se pudo aplicar el precio');
+      if(btn){btn.disabled=false;btn.textContent='Reintentar';}
+      return;
+    }
+    alert(`Precio aplicado: $${d.precio_aplicado} (import ${d.import_id}). Se refleja en el panel en el próximo ciclo (~2 min).`);
+    await cargarEstado();
+  }catch(e){
+    alert('Error de red aplicando el precio');
+    if(btn){btn.disabled=false;btn.textContent='Reintentar';}
+  }
+}
+
 function detalleDiagnosticoHtml(item){
   const hist=historialCache[String(item.sku_patish)]||[];
   const histHtml=hist.length
@@ -842,7 +862,7 @@ function detalleDiagnosticoHtml(item){
         <div class="diag-card"><div class="diag-label">PDP / ganador</div><div class="diag-value">${escapeHtml(item.seller_buybox||'-')} · ${money(item.precio_liverpool)}</div></div>
         <div class="diag-card"><div class="diag-label">Tu oferta</div><div class="diag-value">${money(item.precio_tuyo)} · stock ${escapeHtml(item.stock_tuyo??'-')}</div></div>
         <div class="diag-card"><div class="diag-label">Ventas 30d</div><div class="diag-value">${formatearNumero(item.ventas_30d_piezas)} pzas<br><span style="font-size:11px;color:var(--muted)">${money(item.ventas_30d_monto)} · ${escapeHtml(item.ventas_ultima_fecha||'sin fecha')}</span></div></div>
-        <div class="diag-card"><div class="diag-label">Repricing</div><div class="diag-value">${item.reprice_sugerido?money(item.reprice_sugerido):'-'}<br><span style="font-size:11px;color:var(--muted)">${escapeHtml(item.reprice_motivo||item.accion_recomendada||'')}</span></div></div>
+        <div class="diag-card"><div class="diag-label">Repricing</div><div class="diag-value">${item.reprice_sugerido?money(item.reprice_sugerido):'-'}<br><span style="font-size:11px;color:var(--muted)">${escapeHtml(item.reprice_motivo||item.accion_recomendada||'')}</span>${item.reprice_sugerido?`<br><button class="diag-btn" id="reprice-btn-${domIdSku(item.sku_patish)}" onclick="aplicarReprice('${escapeHtml(item.sku_patish)}')">Bajar a ${money(item.reprice_sugerido)}</button>`:''}</div></div>
         <div class="diag-card"><div class="diag-label">Acción</div><div class="diag-value">${escapeHtml(item.accion_recomendada||'-')}</div></div>
       </div>
       <div class="hist-list"><strong>Historial reciente</strong>${histHtml}</div>
@@ -1630,6 +1650,78 @@ def sync_catalogo_desde_url(force=False):
         CATALOGO_SYNC_LOCK.release()
 
 
+def _xml_reprice_oferta(sku_oferta, nuevo_precio):
+    sku_escapado = (sku_oferta or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return (
+        "<?xml version='1.0' encoding='UTF-8'?>"
+        "<import><offers><offer>"
+        f"<sku>{sku_escapado}</sku>"
+        "<state>11</state>"
+        "<update-delete>UPDATE</update-delete>"
+        f"<discount-price>{nuevo_precio:.0f}</discount-price>"
+        "</offer></offers></import>"
+    )
+
+
+def subir_reprice_liverpool(sku_oferta, nuevo_precio):
+    """Sube un XML de actualizacion de 1 oferta via EUOFER-01 (Administracion de Ofertas).
+    Cambia discount-price -- el precio real que compite en el BuyBox -- y no price, que es
+    el techo/lista y no mueve lo que el cliente ve (confirmado leyendo EUOFER-21: el precio
+    real siempre esta en discount.discount_price cuando hay descuento activo)."""
+    if not LIVERPOOL_API_KEY:
+        raise RuntimeError("Falta LIVERPOOL_API_KEY")
+    xml = _xml_reprice_oferta(sku_oferta, nuevo_precio)
+    files = {"file": ("reprice.xml", xml.encode("utf-8"), "text/xml")}
+    data = {"shopId": LIVERPOOL_SHOP_ID}
+    headers = {"apikey": LIVERPOOL_API_KEY, "Accept": "application/vnd.private.api.v1+json"}
+    resp = requests.post(
+        f"{LIVERPOOL_BASE_URL}/api/offermanagement/imports",
+        headers=headers, files=files, data=data, timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json().get("importId")
+
+
+def consultar_status_import(import_id):
+    headers = {"apikey": LIVERPOOL_API_KEY}
+    resp = requests.get(
+        f"{LIVERPOOL_BASE_URL}/api/offermanagement/imports/{import_id}",
+        headers=headers, params={"shop_ids": LIVERPOOL_SHOP_ID}, timeout=20,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def consultar_error_report_import(import_id):
+    headers = {"apikey": LIVERPOOL_API_KEY}
+    resp = requests.get(
+        f"{LIVERPOOL_BASE_URL}/api/offermanagement/pricing/imports/{import_id}/error_report",
+        headers=headers, params={"shop_ids": LIVERPOOL_SHOP_ID}, timeout=20,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def aplicar_reprice(sku_patish, nuevo_precio):
+    """Sube el precio nuevo y espera el resultado real de la importacion -- EUOFER-01 es async,
+    regresa un importId y hay que confirmar con EUOFER-02/03 que si se aplico."""
+    import_id = subir_reprice_liverpool(sku_patish, nuevo_precio)
+    status = None
+    for _ in range(8):
+        time.sleep(2)
+        try:
+            status = consultar_status_import(import_id)
+        except Exception as exc:
+            return {"ok": False, "import_id": import_id, "error": f"Error consultando status: {exc}"}
+        if status.get("has_error_report"):
+            try:
+                error_report = consultar_error_report_import(import_id)
+            except Exception as exc:
+                error_report = {"error": str(exc)}
+            return {"ok": False, "import_id": import_id, "status": status, "error_report": error_report}
+    return {"ok": True, "import_id": import_id, "status": status}
+
+
 def construir_items_estado():
     items = []
     ventas_30d = ventas_por_sku(30)
@@ -2175,6 +2267,39 @@ def api_precio_minimo():
         PRECIOS_MINIMOS[sku] = precio
     guardar_precios_minimos()
     return jsonify({"ok": True, "sku_patish": sku, "precio_minimo": formatear_precio(PRECIOS_MINIMOS.get(sku, ""))})
+
+
+@app.route("/api/sku/<path:sku_patish>/reprice", methods=["POST"])
+def api_sku_reprice(sku_patish):
+    sku_patish = limpiar_texto(sku_patish)
+    data = request.get_json(silent=True) or {}
+
+    item = next(
+        (i for i in construir_items_estado() if limpiar_texto(i.get("sku_patish", "")) == sku_patish),
+        None,
+    )
+    if not item:
+        return jsonify({"ok": False, "error": "SKU no encontrado"}), 404
+
+    nuevo_precio = normalizar_precio(data.get("precio"))
+    if nuevo_precio is None:
+        nuevo_precio = normalizar_precio(item.get("reprice_sugerido"))
+    if nuevo_precio is None:
+        return jsonify({"ok": False, "error": "No hay precio sugerido para este SKU"}), 400
+
+    precio_minimo = PRECIOS_MINIMOS.get(sku_patish)
+    if precio_minimo is None:
+        return jsonify({"ok": False, "error": "Configura primero un precio minimo para este SKU -- es el piso de seguridad y es obligatorio antes de aplicar precio automatico"}), 400
+    if nuevo_precio < precio_minimo:
+        return jsonify({"ok": False, "error": f"${nuevo_precio:.0f} esta por debajo de tu minimo (${precio_minimo:.0f}) -- no se aplica"}), 400
+
+    try:
+        resultado = aplicar_reprice(sku_patish, nuevo_precio)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    status_code = 200 if resultado.get("ok") else 400
+    return jsonify({"sku_patish": sku_patish, "precio_aplicado": nuevo_precio, **resultado}), status_code
 
 
 @app.route("/api/precios-minimos/carga", methods=["POST"])
