@@ -1571,7 +1571,10 @@ def procesar_catalogo_api(ofertas):
         estado_inicial = clasificar_estado_oferta(estado_oferta, motivo, cantidad)
 
         multi_offer_sku = normalizar_identificador(str(oferta.get("multiOfferSku") or ""))
-        product_id = multi_offer_sku if len(multi_offer_sku) >= 8 else sku_producto
+        # multiOfferSku es un ID interno de agrupacion de variantes (VGC), NO es navegable:
+        # armar la URL del PDP con el (da 404). El product_id real para la URL siempre es
+        # sku_producto (product_sku). Confirmado con curl contra Liverpool en produccion.
+        product_id = sku_producto
         url = f"https://www.liverpool.com.mx/tienda/pdp/producto/{product_id}?skuid={sku_producto}"
 
         nuevos.append(
