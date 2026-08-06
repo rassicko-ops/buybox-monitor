@@ -3347,27 +3347,41 @@ def _resumen_vgc(product_id, resultados):
     }
 
 
-def _resolver_product_id_via_busqueda(sku_producto, titulo):
-    """Busca en el buscador PUBLICO de Liverpool (sin login ni API key -- mismo tipo de trafico
-    que el monitor ya hace 24/7 contra paginas de producto) el product_id real para SKUs con
-    variantes que la API oficial no resuelve (ni product_sku ni multiOfferSku sirven ahi).
-    Solo acepta el match si encuentra el mismo skuid EXACTO en el resultado de busqueda -- si
-    no aparece, no adivina. Mejor dejar el SKU sin verificar que confundir productos."""
-    if not titulo or not sku_producto:
+def _resolver_product_id_via_busqueda(sku_producto):
+    """Busca el SKU exacto (no el titulo) en el buscador PUBLICO de Liverpool -- cuando el
+    termino de busqueda coincide con un SKU real, Liverpool redirige automaticamente al PDP
+    correcto. Mucho mas confiable que buscar por titulo (que solo da una lista de resultados,
+    sin redirect) -- confirmado 11/11 en pruebas reales tras encontrar este comportamiento.
+    Solo se acepta si hubo redirect a una URL /pdp/ real y esa URL responde 200 con nuestro
+    skuid -- si no, no adivina. Mismo tipo de trafico publico que ya hace el monitor 24/7."""
+    if not sku_producto:
         return None
     try:
         resp = requests.get(
             "https://www.liverpool.com.mx/tienda",
-            params={"s": titulo},
+            params={"s": sku_producto},
+            headers=HEADERS,
+            timeout=15,
+            allow_redirects=True,
+        )
+    except Exception:
+        return None
+    if resp.status_code != 200 or "/pdp/" not in resp.url:
+        return None
+    match = re.search(r"/pdp/[^/]+/(\d+)", resp.url)
+    if not match:
+        return None
+    candidato = match.group(1)
+    try:
+        verif = requests.get(
+            f"https://www.liverpool.com.mx/tienda/pdp/producto/{candidato}",
+            params={"skuid": sku_producto},
             headers=HEADERS,
             timeout=15,
         )
     except Exception:
         return None
-    if resp.status_code != 200:
-        return None
-    match = re.search(rf'pdp/[^"]+/(\d+)\?skuid={re.escape(sku_producto)}\b', resp.text)
-    return match.group(1) if match else None
+    return candidato if verif.status_code == 200 else None
 
 
 def _procesar_grupo_producto(product_id, items_grupo):
@@ -3389,7 +3403,7 @@ def _procesar_grupo_producto(product_id, items_grupo):
                     datetime.now(CDMX_TZ) - ultimo_fallo > timedelta(hours=VGC_RESOLVER_COOLDOWN_HORAS)
                 )
                 if debe_intentar:
-                    resuelto = _resolver_product_id_via_busqueda(sku_liverpool, item.get("producto", ""))
+                    resuelto = _resolver_product_id_via_busqueda(sku_liverpool)
                     if resuelto:
                         VGC_OVERRIDES[sku_patish] = resuelto
                         guardar_vgc_overrides()
