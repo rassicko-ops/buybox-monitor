@@ -218,6 +218,9 @@ input[type=file]{display:none}
 .btn-p:hover{filter:brightness(1.08);box-shadow:0 4px 16px rgba(0,200,150,.45);transform:translateY(-1px)}
 .btn-s{background:#fff;color:var(--text);border:1px solid var(--border)}
 .btn-s:hover{background:#f8fafc;border-color:#cbd5e1}
+.btn-warn{background:linear-gradient(135deg,#fbbf24 0%,#f59e0b 100%);color:#1a1400;box-shadow:0 2px 8px rgba(245,158,11,.35)}
+.btn-warn:hover{filter:brightness(1.05);box-shadow:0 4px 16px rgba(245,158,11,.45);transform:translateY(-1px)}
+.btn-warn:disabled{opacity:.5;cursor:not-allowed;transform:none}
 
 /* FILTERS */
 .frow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
@@ -440,6 +443,8 @@ a.lnk:hover{color:var(--primary)}
         <button type="button" class="btn btn-s" onclick="clearColumnFilters()">Limpiar filtros</button>
         <a id="download-link" class="btn btn-p" href="/api/exportar?estado=TODOS" target="_blank" rel="noreferrer">⬇ Exportar Excel</a>
         <a id="actions-link" class="btn btn-s" href="/api/exportar/acciones" target="_blank" rel="noreferrer">Acciones sugeridas</a>
+        <button type="button" id="btn-ganar-buybox" class="btn btn-warn" onclick="iniciarLoteReprice()" disabled>🏆 Ganar BuyBox (0)</button>
+        <span class="scount" id="lote-status" style="display:none"></span>
       </div>
     </div>
 
@@ -447,6 +452,7 @@ a.lnk:hover{color:var(--primary)}
       <table>
         <thead>
           <tr>
+            <th style="width:26px"><input type="checkbox" id="chk-all-reprice" onchange="toggleSeleccionarTodos(this)" title="Seleccionar todos los que tienen precio sugerido"></th>
             <th class="sortable" onclick="toggleSort('producto')">Producto <span class="sarr" id="sort-producto">↕</span></th>
             <th class="sortable" onclick="toggleSort('sku_patish')">SKU PATISH <span class="sarr" id="sort-sku_patish">↕</span></th>
             <th class="sortable" onclick="toggleSort('sku_liverpool')">SKU Liverpool <span class="sarr" id="sort-sku_liverpool">↕</span></th>
@@ -460,6 +466,7 @@ a.lnk:hover{color:var(--primary)}
             <th>URL</th>
           </tr>
           <tr class="cfrow">
+            <th></th>
             <th><input class="cf" data-col-filter="producto" type="search" placeholder="Filtrar…" oninput="setColumnFilter('producto',this.value)"></th>
             <th><input class="cf" data-col-filter="sku_patish" type="search" placeholder="Filtrar…" oninput="setColumnFilter('sku_patish',this.value)"></th>
             <th><input class="cf" data-col-filter="sku_liverpool" type="search" placeholder="Filtrar…" oninput="setColumnFilter('sku_liverpool',this.value)"></th>
@@ -489,7 +496,7 @@ a.lnk:hover{color:var(--primary)}
           </tr>
         </thead>
         <tbody id="tbody-estado">
-          <tr><td colspan="11" style="text-align:center;padding:40px;color:var(--muted)">Cargando…</td></tr>
+          <tr><td colspan="12" style="text-align:center;padding:40px;color:var(--muted)">Cargando…</td></tr>
         </tbody>
       </table>
     </div>
@@ -517,7 +524,7 @@ const DEFAULT_COLUMN_FILTERS={
 const NUMERIC_SORT_FIELDS=new Set(['precio_liverpool','precio_tuyo','stock_tuyo','diferencia']);
 const STATE_SORT_ORDER={GANANDO_VERIFICADO:0,GANANDO:0,GANANDO_API_NO_VISIBLE:1,PERDIDO:2,NO_PRENDIDA:3,SKU_INVALIDO:4,PRODUCTO_NO_EXISTE:5,VGC_INVALIDO:6,BLOQUEADA:7,INACTIVA_STOCK:8,SIN_DATOS_STALE:9,SIN_DATOS:10};
 
-let filtroActual='TODOS',confianzaActual='TODAS',accionActual='TODAS',busquedaActual='',ordenActual='producto_asc',todosItems=[],columnFilters={...DEFAULT_COLUMN_FILTERS},expandedVgc='',expandedDiag='',vgcSort='precio_asc',historialCache={};
+let filtroActual='TODOS',confianzaActual='TODAS',accionActual='TODAS',busquedaActual='',ordenActual='producto_asc',todosItems=[],columnFilters={...DEFAULT_COLUMN_FILTERS},expandedVgc='',expandedDiag='',vgcSort='precio_asc',historialCache={},seleccionadosReprice=new Set(),loteRepricePolling=false;
 
 document.getElementById('excel-input').addEventListener('change',function(){
   document.getElementById('file-name-lbl').textContent=this.files[0]?.name||'Ningún archivo';
@@ -876,12 +883,79 @@ async function aplicarReprice(skuPatish){
   }
 }
 
+function toggleSeleccionSku(checkbox){
+  const sku=checkbox.dataset.sku;
+  if(checkbox.checked) seleccionadosReprice.add(sku); else seleccionadosReprice.delete(sku);
+  actualizarBotonLote();
+}
+
+function toggleSeleccionarTodos(checkbox){
+  document.querySelectorAll('#tbody-estado .chk-reprice').forEach(c=>{
+    c.checked=checkbox.checked;
+    if(checkbox.checked) seleccionadosReprice.add(c.dataset.sku); else seleccionadosReprice.delete(c.dataset.sku);
+  });
+  actualizarBotonLote();
+}
+
+function actualizarBotonLote(){
+  const btn=document.getElementById('btn-ganar-buybox');
+  btn.textContent=`🏆 Ganar BuyBox (${seleccionadosReprice.size})`;
+  btn.disabled=seleccionadosReprice.size===0||loteRepricePolling;
+}
+
+async function iniciarLoteReprice(){
+  if(seleccionadosReprice.size===0) return;
+  const skus=Array.from(seleccionadosReprice);
+  const btn=document.getElementById('btn-ganar-buybox');
+  const status=document.getElementById('lote-status');
+  btn.disabled=true;
+  try{
+    const resp=await fetch('/api/reprice/lote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({skus})});
+    const d=await resp.json();
+    if(!d.ok){alert(d.error||'No se pudo iniciar el lote');btn.disabled=false;return;}
+    loteRepricePolling=true;
+    status.style.display='inline';
+    pollLoteReprice();
+  }catch(e){
+    alert('Error de red iniciando el lote');
+    btn.disabled=false;
+  }
+}
+
+async function pollLoteReprice(){
+  const status=document.getElementById('lote-status');
+  try{
+    const resp=await fetch('/api/reprice/lote/status');
+    const d=await resp.json();
+    status.textContent=`Procesando ${d.hechos}/${d.total}…`;
+    if(d.corriendo){
+      setTimeout(pollLoteReprice,2000);
+      return;
+    }
+    loteRepricePolling=false;
+    const ok=(d.resultados||[]).filter(r=>r.ok);
+    const mal=(d.resultados||[]).filter(r=>!r.ok);
+    let msg=`Listo: ${ok.length}/${d.total} aplicados.`;
+    if(mal.length) msg+=`\n\nNo se pudieron:\n`+mal.map(r=>`${r.sku_patish}: ${r.error}`).join('\n');
+    alert(msg);
+    status.style.display='none';
+    seleccionadosReprice.clear();
+    const chkAll=document.getElementById('chk-all-reprice');
+    if(chkAll) chkAll.checked=false;
+    await cargarEstado();
+    actualizarBotonLote();
+  }catch(e){
+    loteRepricePolling=false;
+    status.textContent='Error consultando el estatus del lote.';
+  }
+}
+
 function detalleDiagnosticoHtml(item){
   const hist=historialCache[String(item.sku_patish)]||[];
   const histHtml=hist.length
     ? hist.slice(0,8).map(h=>`<div>${escapeHtml(h.fecha_hora||'-')} · ${escapeHtml(h.estado||'-')} · ${escapeHtml(h.seller||'-')} · ${h.precio?money(h.precio):'-'} · ${escapeHtml(h.tipo_cambio||'')}</div>`).join('')
     : '<div>Cargando historial o sin eventos previos.</div>';
-  return `<tr class="diag-row"><td colspan="11">
+  return `<tr class="diag-row"><td colspan="12">
     <div class="diag-panel">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">
         <div>
@@ -1124,7 +1198,7 @@ function detalleVgcHtml(item){
     <td>${v.stock_tuyo===0||v.stock_tuyo?escapeHtml(v.stock_tuyo):(v.stock===0||v.stock?escapeHtml(v.stock):'-')}</td>
     <td class="vgc-sim">${v.reprice_sugerido?money(v.reprice_sugerido):'-'}${v.reprice_motivo?`<div style="font-size:10px;color:#92400e">${escapeHtml(v.reprice_motivo)}</div>`:''}</td>
   </tr>`).join(''):'<tr><td colspan="9">No hay variantes tuyas detectadas en este VGC.</td></tr>';
-  return `<tr class="vgc-row"><td colspan="11">
+  return `<tr class="vgc-row"><td colspan="12">
     <div class="vgc-detail">
       <h4>VGC ${escapeHtml(d.product_id||item.product_id||item.vgc||'-')} · Detalle de variantes</h4>
       <div class="muted">Tus SKUs en este VGC: ${escapeHtml(String(estadosGrupo.length||d.variantes_mias||'-'))} (${escapeHtml(String(d.variantes_ganando??0))} ganando, ${escapeHtml(String(d.variantes_perdiendo??0))} perdiendo).</div>
@@ -1191,7 +1265,7 @@ function renderTabla(){
   document.getElementById('count-visible').textContent=items.length;
   const tbody=document.getElementById('tbody-estado');
   if(!items.length){
-    tbody.innerHTML='<tr><td colspan="11" style="text-align:center;padding:40px;color:var(--muted)">Sin resultados para este filtro</td></tr>';
+    tbody.innerHTML='<tr><td colspan="12" style="text-align:center;padding:40px;color:var(--muted)">Sin resultados para este filtro</td></tr>';
     return;
   }
   const expandedMostrados=new Set();
@@ -1210,7 +1284,11 @@ function renderTabla(){
       ? `<button type="button" class="vgc-chip" onclick="toggleDetalleVgc('${escapeHtml(p.sku_liverpool)}')">${expandedVgc===vgcKey?'Ocultar':'Ver'} ${escapeHtml(chipTexto)}</button>`
       : '';
     const prioridad=prioridadBadge(p);
+    const chkCell=p.reprice_sugerido
+      ? `<td><input type="checkbox" class="chk-reprice" data-sku="${escapeHtml(p.sku_patish)}" onchange="toggleSeleccionSku(this)" ${seleccionadosReprice.has(p.sku_patish)?'checked':''}></td>`
+      : '<td></td>';
     const row=`<tr>
+      ${chkCell}
       <td class="prod-cell" title="${escapeHtml(p.producto)}">${escapeHtml(p.producto)} ${groupInfo}<br>${vgcChip} ${prioridad}</td>
       <td class="sku-cell" title="Click para copiar" onclick="copiarCelda('${escapeHtml(p.sku_patish)}')">${escapeHtml(p.sku_patish)}</td>
       <td class="sku-cell" title="Click para copiar" onclick="copiarCelda('${escapeHtml(p.sku_liverpool)}')">${escapeHtml(p.sku_liverpool)}</td>
@@ -1812,6 +1890,48 @@ def aplicar_reprice(sku_patish, nuevo_precio):
     return {"ok": True, "import_id": import_id, "status": status}
 
 
+REPRICE_LOTE_LOCK = threading.Lock()
+REPRICE_LOTE_ESTADO = {"corriendo": False, "total": 0, "hechos": 0, "resultados": []}
+REPRICE_LOTE_PAUSA_SEGUNDOS = 1.5
+
+
+def _procesar_lote_reprice(skus):
+    """Corre en un thread aparte para no bloquear el request que lo dispara -- cada SKU ya
+    tarda hasta ~16s (EUOFER-01 es async, se espera confirmacion via EUOFER-02). Se procesan
+    uno por uno, con pausa entre cada uno, para no mandar varias importaciones en paralelo."""
+    items_por_sku = {i["sku_patish"]: i for i in construir_items_estado()}
+    resultados = []
+    for sku in skus:
+        entrada = {"sku_patish": sku, "ok": False, "error": "", "precio_aplicado": None}
+        item = items_por_sku.get(sku)
+        if not item:
+            entrada["error"] = "SKU no encontrado"
+        else:
+            nuevo_precio = normalizar_precio(item.get("reprice_sugerido"))
+            if nuevo_precio is None:
+                entrada["error"] = "Sin precio sugerido"
+            else:
+                precio_minimo = PRECIOS_MINIMOS.get(sku)
+                if precio_minimo is not None and nuevo_precio < precio_minimo:
+                    entrada["error"] = f"${nuevo_precio:.0f} por debajo del minimo (${precio_minimo:.0f})"
+                else:
+                    try:
+                        resultado = aplicar_reprice(sku, nuevo_precio)
+                        entrada["ok"] = bool(resultado.get("ok"))
+                        entrada["precio_aplicado"] = nuevo_precio
+                        if not entrada["ok"]:
+                            entrada["error"] = str(resultado.get("error") or resultado.get("error_report") or "Rechazado por Liverpool")
+                    except Exception as exc:
+                        entrada["error"] = str(exc)
+        resultados.append(entrada)
+        with REPRICE_LOTE_LOCK:
+            REPRICE_LOTE_ESTADO["hechos"] = len(resultados)
+            REPRICE_LOTE_ESTADO["resultados"] = list(resultados)
+        time.sleep(REPRICE_LOTE_PAUSA_SEGUNDOS)
+    with REPRICE_LOTE_LOCK:
+        REPRICE_LOTE_ESTADO["corriendo"] = False
+
+
 def construir_items_estado():
     items = []
     ventas_30d = ventas_por_sku(30)
@@ -2408,6 +2528,26 @@ def api_sku_reprice(sku_patish):
 
     status_code = 200 if resultado.get("ok") else 400
     return jsonify({"sku_patish": sku_patish, "precio_aplicado": nuevo_precio, **resultado}), status_code
+
+
+@app.route("/api/reprice/lote", methods=["POST"])
+def api_reprice_lote():
+    data = request.get_json(silent=True) or {}
+    skus = [limpiar_texto(s) for s in (data.get("skus") or []) if limpiar_texto(s)]
+    if not skus:
+        return jsonify({"ok": False, "error": "No se recibieron SKUs"}), 400
+    with REPRICE_LOTE_LOCK:
+        if REPRICE_LOTE_ESTADO["corriendo"]:
+            return jsonify({"ok": False, "error": "Ya hay un lote de reprecio corriendo"}), 409
+        REPRICE_LOTE_ESTADO.update({"corriendo": True, "total": len(skus), "hechos": 0, "resultados": []})
+    threading.Thread(target=_procesar_lote_reprice, args=(skus,), daemon=True).start()
+    return jsonify({"ok": True, "total": len(skus)})
+
+
+@app.route("/api/reprice/lote/status")
+def api_reprice_lote_status():
+    with REPRICE_LOTE_LOCK:
+        return jsonify(dict(REPRICE_LOTE_ESTADO))
 
 
 @app.route("/api/precios-minimos/carga", methods=["POST"])
