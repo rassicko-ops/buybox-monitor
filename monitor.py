@@ -1221,7 +1221,7 @@ function renderTabla(){
       <td>${p.precio_liverpool?'$'+escapeHtml(String(p.precio_liverpool)):'-'}</td>
       <td>${p.precio_tuyo?'$'+escapeHtml(String(p.precio_tuyo)):'-'}</td>
       <td>${stock}</td>
-      <td>${diff||'-'}${p.accion_recomendada?`<div style="font-size:10px;color:var(--muted)">${escapeHtml(p.accion_recomendada)}</div>`:''}</td>
+      <td>${diff||'-'}${p.accion_recomendada?`<div style="font-size:10px;color:var(--muted)">${escapeHtml(p.accion_recomendada)}</div>`:''}${p.reprice_sugerido?`<br><button type="button" class="diag-btn" id="reprice-btn-${domIdSku(p.sku_patish)}" onclick="aplicarReprice('${escapeHtml(p.sku_patish)}')">Bajar a ${money(p.reprice_sugerido)}</button>`:''}</td>
       <td>${p.url?`<a class="lnk" href="${escapeHtml(p.url)}" target="_blank" rel="noreferrer">ver</a>`:'-'}<br><button type="button" class="diag-btn" onclick="toggleDiagnostico('${escapeHtml(p.sku_patish)}')">${expandedDiag===String(p.sku_patish)?'Ocultar':'Diagnóstico'}</button></td>
     </tr>`;
     let extra='';
