@@ -936,7 +936,7 @@ async function pollLoteReprice(){
     const ok=(d.resultados||[]).filter(r=>r.ok);
     const mal=(d.resultados||[]).filter(r=>!r.ok);
     let msg=`Listo: ${ok.length}/${d.total} aplicados.`;
-    if(mal.length) msg+=`\n\nNo se pudieron:\n`+mal.map(r=>`${r.sku_patish}: ${r.error}`).join('\n');
+    if(mal.length) msg+=`\\n\\nNo se pudieron:\\n`+mal.map(r=>`${r.sku_patish}: ${r.error}`).join('\\n');
     alert(msg);
     status.style.display='none';
     seleccionadosReprice.clear();
