@@ -859,7 +859,6 @@ function domIdSku(value){
 
 async function aplicarReprice(skuPatish){
   const btn=document.getElementById(`reprice-btn-${domIdSku(skuPatish)}`);
-  if(!confirm(`Vas a bajar el precio real de ${skuPatish} en Liverpool. ¿Aplicar?`)) return;
   if(btn){btn.disabled=true;btn.textContent='Aplicando...';}
   try{
     const resp=await fetch(`/api/sku/${encodeURIComponent(skuPatish)}/reprice`,{method:'POST'});
@@ -2399,9 +2398,7 @@ def api_sku_reprice(sku_patish):
         return jsonify({"ok": False, "error": "No hay precio sugerido para este SKU"}), 400
 
     precio_minimo = PRECIOS_MINIMOS.get(sku_patish)
-    if precio_minimo is None:
-        return jsonify({"ok": False, "error": "Configura primero un precio minimo para este SKU -- es el piso de seguridad y es obligatorio antes de aplicar precio automatico"}), 400
-    if nuevo_precio < precio_minimo:
+    if precio_minimo is not None and nuevo_precio < precio_minimo:
         return jsonify({"ok": False, "error": f"${nuevo_precio:.0f} esta por debajo de tu minimo (${precio_minimo:.0f}) -- no se aplica"}), 400
 
     try:
