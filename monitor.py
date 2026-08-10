@@ -63,6 +63,9 @@ CATALOGO_SYNC_INTERVAL_HOURS = float(os.getenv("CATALOGO_SYNC_INTERVAL_HOURS", "
 CATALOGO_SYNC_ON_START = os.getenv("CATALOGO_SYNC_ON_START", "").strip().lower() in {"1", "true", "yes", "si"}
 PANEL_SECRET = os.getenv("PANEL_SECRET", "").strip()
 REPRICER_STEP = float(os.getenv("REPRICER_STEP", "1"))
+AUTO_REPRICE_ACTIVO = os.getenv("AUTO_REPRICE_ACTIVO", "false").strip().lower() == "true"
+AUTO_REPRICE_UMBRAL = float(os.getenv("AUTO_REPRICE_UMBRAL", "20"))
+AUTO_REPRICE_MAX_DIARIO = int(os.getenv("AUTO_REPRICE_MAX_DIARIO", "5"))
 
 HEADERS = {
     "User-Agent": (
@@ -95,6 +98,7 @@ PRECIOS_MINIMOS = {}
 VGC_OVERRIDES = {}
 VGC_RESOLVER_FALLIDOS = {}
 VGC_RESOLVER_COOLDOWN_HORAS = 6
+AUTO_REPRICE_CONTADOR = {}  # sku_patish -> {"fecha": "YYYY-MM-DD", "conteo": N}
 VENTAS_CACHE = {"ts": 0, "dias": None, "data": {}}
 CATALOGO_SYNC_LOCK = threading.Lock()
 CATALOGO_SYNC_STATE = {
@@ -1932,6 +1936,45 @@ def _procesar_lote_reprice(skus):
         REPRICE_LOTE_ESTADO["corriendo"] = False
 
 
+def _reservar_auto_reprice(sku_patish):
+    """Reserva un intento de auto-reprecio para hoy (tope AUTO_REPRICE_MAX_DIARIO por SKU) --
+    se incrementa el contador ANTES de disparar el request, no despues, para que dos ciclos
+    que se traslapen no se pasen del tope."""
+    hoy = datetime.now(CDMX_TZ).strftime("%Y-%m-%d")
+    registro = AUTO_REPRICE_CONTADOR.get(sku_patish)
+    if not registro or registro.get("fecha") != hoy:
+        registro = {"fecha": hoy, "conteo": 0}
+    if registro["conteo"] >= AUTO_REPRICE_MAX_DIARIO:
+        return False
+    registro["conteo"] += 1
+    AUTO_REPRICE_CONTADOR[sku_patish] = registro
+    return True
+
+
+def _procesar_auto_reprice(candidatos):
+    """Aplica precio automatico para SKUs que perdieron por menos de AUTO_REPRICE_UMBRAL.
+    Corre en thread aparte (igual que el lote manual) para no bloquear el ciclo del monitor --
+    cada aplicacion tarda hasta ~16s por la espera de confirmacion de EUOFER-01/02. Avisa por
+    Telegram cada resultado, exito o fallo, para que quede visible sin tener que ver el panel."""
+    for sku_patish, nuevo_precio, producto, precio_anterior in candidatos:
+        try:
+            resultado = aplicar_reprice(sku_patish, nuevo_precio)
+        except Exception as exc:
+            resultado = {"ok": False, "error": str(exc)}
+        if resultado.get("ok"):
+            enviar_telegram(
+                f"🏆 <b>AUTO-REPRECIO</b>\n{escapar(sku_patish)} · {escapar(producto[:60])}\n"
+                f"${precio_anterior:.0f} → ${nuevo_precio:.0f}"
+            )
+        else:
+            motivo = resultado.get("error") or resultado.get("error_report") or "rechazado por Liverpool"
+            enviar_telegram(
+                f"⚠️ <b>AUTO-REPRECIO FALLO</b>\n{escapar(sku_patish)} · {escapar(producto[:60])}\n"
+                f"Intento: ${nuevo_precio:.0f} · Motivo: {escapar(str(motivo)[:200])}"
+            )
+        time.sleep(REPRICE_LOTE_PAUSA_SEGUNDOS)
+
+
 def construir_items_estado():
     items = []
     ventas_30d = ventas_por_sku(30)
@@ -3610,6 +3653,7 @@ def monitorear():
     perdiendo = []
     no_prendidas = []
     perdidas_alerta = []
+    auto_reprice_candidatos = []
     now_cdmx = datetime.now(CDMX_TZ)
     now_str = now_cdmx.strftime("%H:%M:%S")
     fecha_hora = now_cdmx.strftime("%Y-%m-%d %H:%M:%S")
@@ -3733,6 +3777,22 @@ def monitorear():
             ULTIMO_SEGUNDO_PRECIO[sku_patish] = r.get("segundo_precio", "")
             ULTIMO_REPRICE_SUGERIDO[sku_patish] = reprice_sugerido
             ULTIMO_REPRICE_MOTIVO[sku_patish] = reprice_motivo
+
+            if AUTO_REPRICE_ACTIVO and nuevo_estado == "PERDIDO" and reprice_sugerido:
+                precio_ganador_num = normalizar_precio(price)
+                precio_mio_num = normalizar_precio(r["precio_mio"])
+                nuevo_precio_num = normalizar_precio(reprice_sugerido)
+                if precio_ganador_num is not None and precio_mio_num is not None and nuevo_precio_num is not None:
+                    diferencia = precio_mio_num - precio_ganador_num
+                    precio_minimo_sku = PRECIOS_MINIMOS.get(sku_patish)
+                    if (
+                        0 < diferencia <= AUTO_REPRICE_UMBRAL
+                        and (precio_minimo_sku is None or nuevo_precio_num >= precio_minimo_sku)
+                        and _reservar_auto_reprice(sku_patish)
+                    ):
+                        auto_reprice_candidatos.append(
+                            (sku_patish, nuevo_precio_num, item.get("producto", ""), precio_mio_num)
+                        )
             ULTIMO_LAST_CHECKED[sku_patish] = fecha_hora
             ULTIMO_SOURCE[sku_patish] = r.get("source", "")
             ULTIMO_STATUS_CODE[sku_patish] = r.get("status_code", "")
@@ -3745,6 +3805,9 @@ def monitorear():
         conteos_actuales[item.get("estado", "SIN_DATOS")] += 1
 
     enviar_alerta_perdidas(perdidas_alerta)
+
+    if auto_reprice_candidatos:
+        threading.Thread(target=_procesar_auto_reprice, args=(auto_reprice_candidatos,), daemon=True).start()
 
     activas = sum(1 for item in CATALOGO if item["estado_oferta"] == "ACTIVA")
     print(
