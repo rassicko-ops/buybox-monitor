@@ -1939,9 +1939,11 @@ def _procesar_lote_reprice(skus):
 
 
 def _reservar_auto_reprice(sku_patish):
-    """Reserva un intento de auto-reprecio para hoy (tope AUTO_REPRICE_MAX_DIARIO por SKU) --
-    se incrementa el contador ANTES de disparar el request, no despues, para que dos ciclos
-    que se traslapen no se pasen del tope."""
+    """Reserva un intento de auto-reprecio para hoy (tope AUTO_REPRICE_MAX_DIARIO por SKU,
+    0 o negativo = sin limite) -- se incrementa el contador ANTES de disparar el request, no
+    despues, para que dos ciclos que se traslapen no se pasen del tope."""
+    if AUTO_REPRICE_MAX_DIARIO <= 0:
+        return True
     hoy = datetime.now(CDMX_TZ).strftime("%Y-%m-%d")
     registro = AUTO_REPRICE_CONTADOR.get(sku_patish)
     if not registro or registro.get("fecha") != hoy:
