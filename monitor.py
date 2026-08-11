@@ -1905,35 +1905,37 @@ def _procesar_lote_reprice(skus):
     uno por uno, con pausa entre cada uno, para no mandar varias importaciones en paralelo."""
     items_por_sku = {i["sku_patish"]: i for i in construir_items_estado()}
     resultados = []
-    for sku in skus:
-        entrada = {"sku_patish": sku, "ok": False, "error": "", "precio_aplicado": None}
-        item = items_por_sku.get(sku)
-        if not item:
-            entrada["error"] = "SKU no encontrado"
-        else:
-            nuevo_precio = normalizar_precio(item.get("reprice_sugerido"))
-            if nuevo_precio is None:
-                entrada["error"] = "Sin precio sugerido"
+    try:
+        for sku in skus:
+            entrada = {"sku_patish": sku, "ok": False, "error": "", "precio_aplicado": None}
+            item = items_por_sku.get(sku)
+            if not item:
+                entrada["error"] = "SKU no encontrado"
             else:
-                precio_minimo = PRECIOS_MINIMOS.get(sku)
-                if precio_minimo is not None and nuevo_precio < precio_minimo:
-                    entrada["error"] = f"${nuevo_precio:.0f} por debajo del minimo (${precio_minimo:.0f})"
+                nuevo_precio = normalizar_precio(item.get("reprice_sugerido"))
+                if nuevo_precio is None:
+                    entrada["error"] = "Sin precio sugerido"
                 else:
-                    try:
-                        resultado = aplicar_reprice(sku, nuevo_precio)
-                        entrada["ok"] = bool(resultado.get("ok"))
-                        entrada["precio_aplicado"] = nuevo_precio
-                        if not entrada["ok"]:
-                            entrada["error"] = str(resultado.get("error") or resultado.get("error_report") or "Rechazado por Liverpool")
-                    except Exception as exc:
-                        entrada["error"] = str(exc)
-        resultados.append(entrada)
+                    precio_minimo = PRECIOS_MINIMOS.get(sku)
+                    if precio_minimo is not None and nuevo_precio < precio_minimo:
+                        entrada["error"] = f"${nuevo_precio:.0f} por debajo del minimo (${precio_minimo:.0f})"
+                    else:
+                        try:
+                            resultado = aplicar_reprice(sku, nuevo_precio)
+                            entrada["ok"] = bool(resultado.get("ok"))
+                            entrada["precio_aplicado"] = nuevo_precio
+                            if not entrada["ok"]:
+                                entrada["error"] = str(resultado.get("error") or resultado.get("error_report") or "Rechazado por Liverpool")
+                        except Exception as exc:
+                            entrada["error"] = str(exc)
+            resultados.append(entrada)
+            with REPRICE_LOTE_LOCK:
+                REPRICE_LOTE_ESTADO["hechos"] = len(resultados)
+                REPRICE_LOTE_ESTADO["resultados"] = list(resultados)
+            time.sleep(REPRICE_LOTE_PAUSA_SEGUNDOS)
+    finally:
         with REPRICE_LOTE_LOCK:
-            REPRICE_LOTE_ESTADO["hechos"] = len(resultados)
-            REPRICE_LOTE_ESTADO["resultados"] = list(resultados)
-        time.sleep(REPRICE_LOTE_PAUSA_SEGUNDOS)
-    with REPRICE_LOTE_LOCK:
-        REPRICE_LOTE_ESTADO["corriendo"] = False
+            REPRICE_LOTE_ESTADO["corriendo"] = False
 
 
 def _reservar_auto_reprice(sku_patish):
@@ -1951,28 +1953,38 @@ def _reservar_auto_reprice(sku_patish):
     return True
 
 
+AUTO_REPRICE_PAUSA_SEGUNDOS = float(os.getenv("AUTO_REPRICE_PAUSA_SEGUNDOS", "4"))
+
+
 def _procesar_auto_reprice(candidatos):
     """Aplica precio automatico para SKUs que perdieron por menos de AUTO_REPRICE_UMBRAL.
     Corre en thread aparte (igual que el lote manual) para no bloquear el ciclo del monitor --
     cada aplicacion tarda hasta ~16s por la espera de confirmacion de EUOFER-01/02. Avisa por
-    Telegram cada resultado, exito o fallo, para que quede visible sin tener que ver el panel."""
-    for sku_patish, nuevo_precio, producto, precio_anterior in candidatos:
-        try:
-            resultado = aplicar_reprice(sku_patish, nuevo_precio)
-        except Exception as exc:
-            resultado = {"ok": False, "error": str(exc)}
-        if resultado.get("ok"):
-            enviar_telegram(
-                f"🏆 <b>AUTO-REPRECIO</b>\n{escapar(sku_patish)} · {escapar(producto[:60])}\n"
-                f"${precio_anterior:.0f} → ${nuevo_precio:.0f}"
-            )
-        else:
-            motivo = resultado.get("error") or resultado.get("error_report") or "rechazado por Liverpool"
-            enviar_telegram(
-                f"⚠️ <b>AUTO-REPRECIO FALLO</b>\n{escapar(sku_patish)} · {escapar(producto[:60])}\n"
-                f"Intento: ${nuevo_precio:.0f} · Motivo: {escapar(str(motivo)[:200])}"
-            )
-        time.sleep(REPRICE_LOTE_PAUSA_SEGUNDOS)
+    Telegram cada resultado, exito o fallo, para que quede visible sin tener que ver el panel.
+    Comparte REPRICE_LOTE_ESTADO['corriendo'] con el lote manual como candado exclusivo -- sin
+    esto, un ciclo de 2 min podia lanzar una tanda nueva encima de una que seguia corriendo
+    (una tanda larga tarda mas que el ciclo), duplicando requests y disparando 429 de Liverpool."""
+    try:
+        for sku_patish, nuevo_precio, producto, precio_anterior in candidatos:
+            try:
+                resultado = aplicar_reprice(sku_patish, nuevo_precio)
+            except Exception as exc:
+                resultado = {"ok": False, "error": str(exc)}
+            if resultado.get("ok"):
+                enviar_telegram(
+                    f"🏆 <b>AUTO-REPRECIO</b>\n{escapar(sku_patish)} · {escapar(producto[:60])}\n"
+                    f"${precio_anterior:.0f} → ${nuevo_precio:.0f}"
+                )
+            else:
+                motivo = resultado.get("error") or resultado.get("error_report") or "rechazado por Liverpool"
+                enviar_telegram(
+                    f"⚠️ <b>AUTO-REPRECIO FALLO</b>\n{escapar(sku_patish)} · {escapar(producto[:60])}\n"
+                    f"Intento: ${nuevo_precio:.0f} · Motivo: {escapar(str(motivo)[:200])}"
+                )
+            time.sleep(AUTO_REPRICE_PAUSA_SEGUNDOS)
+    finally:
+        with REPRICE_LOTE_LOCK:
+            REPRICE_LOTE_ESTADO["corriendo"] = False
 
 
 def construir_items_estado():
@@ -3778,7 +3790,12 @@ def monitorear():
             ULTIMO_REPRICE_SUGERIDO[sku_patish] = reprice_sugerido
             ULTIMO_REPRICE_MOTIVO[sku_patish] = reprice_motivo
 
-            if AUTO_REPRICE_ACTIVO and nuevo_estado == "PERDIDO" and reprice_sugerido:
+            if (
+                AUTO_REPRICE_ACTIVO
+                and not REPRICE_LOTE_ESTADO["corriendo"]
+                and nuevo_estado == "PERDIDO"
+                and reprice_sugerido
+            ):
                 precio_ganador_num = normalizar_precio(price)
                 precio_mio_num = normalizar_precio(r["precio_mio"])
                 nuevo_precio_num = normalizar_precio(reprice_sugerido)
@@ -3807,7 +3824,12 @@ def monitorear():
     enviar_alerta_perdidas(perdidas_alerta)
 
     if auto_reprice_candidatos:
-        threading.Thread(target=_procesar_auto_reprice, args=(auto_reprice_candidatos,), daemon=True).start()
+        with REPRICE_LOTE_LOCK:
+            ya_corriendo = REPRICE_LOTE_ESTADO["corriendo"]
+            if not ya_corriendo:
+                REPRICE_LOTE_ESTADO["corriendo"] = True
+        if not ya_corriendo:
+            threading.Thread(target=_procesar_auto_reprice, args=(auto_reprice_candidatos,), daemon=True).start()
 
     activas = sum(1 for item in CATALOGO if item["estado_oferta"] == "ACTIVA")
     print(
