@@ -3019,20 +3019,22 @@ def extraer_buybox_offerlisting(texto_rsc, sku_id):
     "bestOffer" mezclado en el mismo HTML, lo que causaba falsos positivos/negativos al
     buscar el primer match en toda la página. Aquí se ancla en "skuId":"<sku_id>" para el
     ganador oficial de Liverpool, y se junta la lista completa de "offers":[...] (forma de
-    arreglo, no el resumen "offers":{"bestOffer":...}) para saber si PATISH tiene oferta."""
+    arreglo, no el resumen "offers":{"bestOffer":...}) para saber si PATISH tiene oferta.
+
+    IMPORTANTE: Liverpool migro el JSON embebido -- "bestOfferSellerName" (plano) ya no
+    existe, ahora es "bestOffer":{"sellerName":...}. Y el precio de cada oferta ya no
+    viaja plano junto al seller ("salePrice" al mismo nivel) -- ahora esta anidado en
+    "priceInfo":{"salePrice":...} dentro de cada oferta. Confirmado en vivo (23-sep):
+    esto rompio la extraccion de precio para TODO el catalogo (984/984 productos con
+    precio vacio) mientras el seller seguia bien porque ese dato tiene una fuente
+    independiente (el "Vendido por:" renderizado en el HTML, ver extraer_vendedor_renderizado)."""
     if not texto_rsc or not sku_id:
         return None, None, []
 
-    ganador = None
     anchor = f'"skuId":"{sku_id}"'
     idx = texto_rsc.find(anchor)
     if idx == -1:
         return None, None, []
-
-    ventana = texto_rsc[idx:idx + 400]
-    m = re.search(r'"bestOfferSellerName"\s*:\s*"([^"]*)"', ventana)
-    if m and m.group(1):
-        ganador = m.group(1)
 
     # Acotar la búsqueda de ofertas a este SKU: desde su ancla hasta el siguiente
     # "skuId" distinto (variante hermana), para no mezclar sellers de otro color/talla.
@@ -3040,10 +3042,15 @@ def extraer_buybox_offerlisting(texto_rsc, sku_id):
     fin = idx + len(anchor) + siguiente_sku.start() if siguiente_sku else len(texto_rsc)
     tramo = texto_rsc[idx:fin]
 
+    ganador = None
+    m = re.search(r'"bestOffer"\s*:\s*\{[^{}]*?"sellerName"\s*:\s*"([^"]*)"', tramo)
+    if m and m.group(1):
+        ganador = m.group(1)
+
     ofertas = {}
     for bloque in re.finditer(r'"offers":\[(.*?)\](?=[,}])', tramo, re.DOTALL):
         for oferta in re.finditer(
-            r'"sellerId":"([^"]*)","sellerName":"([^"]*)"[^{}]*?"salePrice":(\d+(?:\.\d+)?)',
+            r'"sellerId":"([^"]*)","sellerName":"([^"]*)"[^{}]*?"priceInfo":\{"salePrice":(\d+(?:\.\d+)?)',
             bloque.group(1),
         ):
             seller_id, seller_name, precio = oferta.groups()
