@@ -14,11 +14,13 @@ echo "==> Repo: $ROOT_DIR"
 echo "==> Revisando cambios..."
 git status --short --branch
 
-if ! git diff --quiet -- monitor.py ventas.py skus.csv deploy_live.sh .gitignore || ! git diff --cached --quiet -- monitor.py ventas.py skus.csv deploy_live.sh .gitignore; then
+ARCHIVOS_DEPLOY="monitor.py mercadolibre.py ventas.py skus.csv deploy_live.sh .gitignore"
+
+if [ -n "$(git status --porcelain -- $ARCHIVOS_DEPLOY)" ]; then
   echo "==> Agregando archivos del deploy..."
-  git add monitor.py ventas.py skus.csv deploy_live.sh .gitignore
+  git add $ARCHIVOS_DEPLOY
 else
-  echo "==> No hay cambios nuevos en monitor.py, ventas.py, skus.csv, deploy_live.sh o .gitignore"
+  echo "==> No hay cambios nuevos en: $ARCHIVOS_DEPLOY"
 fi
 
 if git diff --cached --quiet; then

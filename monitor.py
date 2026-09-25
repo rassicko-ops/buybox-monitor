@@ -132,6 +132,11 @@ PORT = int(os.getenv("PORT", "8080"))
 
 app = Flask(__name__)
 
+# Integracion Mercado Libre -- modulo 100% separado (ver mercadolibre.py), no
+# comparte estado ni logica con nada de Liverpool. Se registra como Blueprint.
+import mercadolibre
+app.register_blueprint(mercadolibre.ml_bp)
+
 # ================================
 # HTML PANEL
 # ================================
@@ -3958,5 +3963,6 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     threading.Thread(target=loop_monitor, daemon=True).start()
+    mercadolibre.iniciar_hilos_ml()
 
     app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
