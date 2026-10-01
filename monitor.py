@@ -1753,17 +1753,7 @@ def procesar_catalogo_api(ofertas):
 
         producto = limpiar_texto(oferta.get("product_title"))
         estado_oferta = "ACTIVA" if limpiar_texto(oferta.get("state_code")).upper() == "ACTIVE" else "INACTIVA"
-        motivo_lista = [limpiar_texto(r) for r in (oferta.get("inactivity_reasons") or [])]
-        # Liverpool tambien bloquea ofertas via permisionRuleBlock (campo aparte de
-        # inactivity_reasons, EUOFER-21 no lo documenta) -- confirmado en vivo 2026-10-01:
-        # 962 de 1118 ofertas de PATISH lo tienen activo (codigos PATTCOSKUs/PCOST/
-        # BATTCOSKUs/BCOST), 68 de esas SI tienen stock real y antes caian en
-        # INACTIVA_STOCK (sugiere "repon stock") en vez de BLOQUEADA (el problema real
-        # es el bloqueo de Liverpool, no falta de inventario).
-        bloqueo = oferta.get("permisionRuleBlock") or {}
-        if bloqueo.get("statusBlock"):
-            motivo_lista.append(f"restricción de oferta ({bloqueo.get('code') or bloqueo.get('name') or 'bloqueo Liverpool'})")
-        motivo = ", ".join(motivo_lista)
+        motivo = ", ".join(limpiar_texto(r) for r in (oferta.get("inactivity_reasons") or []))
         # "price" es el precio techo/lista; el precio real de venta (el que compite en el
         # BuyBox) es discount.discount_price cuando hay descuento activo.
         descuento = oferta.get("discount") or {}
