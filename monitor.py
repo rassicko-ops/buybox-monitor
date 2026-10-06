@@ -1665,9 +1665,14 @@ def procesar_excel_catalogo(excel_bytes):
         product_id = vgc_limpio if len(vgc_limpio) >= 8 else sku_producto
         url = f"https://www.liverpool.com.mx/tienda/pdp/producto/{product_id}?skuid={sku_producto}"
 
+        sku_oferta_celda = row.get("sku de oferta")
+        offer_sku_raw = "" if sku_oferta_celda is None or pd.isna(sku_oferta_celda) else str(sku_oferta_celda)
         nuevos.append(
             {
                 "sku_patish": sku_oferta,
+                # SKU tal cual venia en la celda del Excel, sin .strip() -- ver el
+                # comentario largo en procesar_catalogo_api() sobre por que importa.
+                "offer_sku_raw": offer_sku_raw or sku_oferta,
                 "sku_liverpool": sku_producto,
                 "product_id": product_id,
                 "vgc": vgc,
@@ -1777,6 +1782,16 @@ def procesar_catalogo_api(ofertas):
         nuevos.append(
             {
                 "sku_patish": sku_oferta,
+                # offer_sku SIN .strip() -- algunas ofertas de Liverpool tienen un
+                # espacio en blanco real al inicio/final como parte de su SKU
+                # verdadero (error de captura del lado de Liverpool, no nuestro);
+                # sku_patish (arriba) esta recortado y es la llave segura para
+                # comparar/mostrar en todo el motor, pero si se manda recortado
+                # de vuelta en un reprice, Liverpool responde "no existe esa
+                # oferta" porque ya no coincide con su registro exacto. Este
+                # campo preserva el original SOLO para cuando hay que escribir
+                # de vuelta (ver aplicar_reprice).
+                "offer_sku_raw": oferta.get("offer_sku") or sku_oferta,
                 "sku_liverpool": sku_producto,
                 "product_id": product_id,
                 "vgc": multi_offer_sku,
@@ -1934,7 +1949,7 @@ def _procesar_lote_reprice(skus):
                         entrada["error"] = f"${nuevo_precio:.0f} por debajo del minimo (${precio_minimo:.0f})"
                     else:
                         try:
-                            resultado = aplicar_reprice(sku, nuevo_precio)
+                            resultado = aplicar_reprice(item.get("offer_sku_raw") or sku, nuevo_precio)
                             entrada["ok"] = bool(resultado.get("ok"))
                             entrada["precio_aplicado"] = nuevo_precio
                             if not entrada["ok"]:
@@ -1980,9 +1995,9 @@ def _procesar_auto_reprice(candidatos):
     esto, un ciclo de 2 min podia lanzar una tanda nueva encima de una que seguia corriendo
     (una tanda larga tarda mas que el ciclo), duplicando requests y disparando 429 de Liverpool."""
     try:
-        for sku_patish, nuevo_precio, producto, precio_anterior in candidatos:
+        for sku_patish, offer_sku_raw, nuevo_precio, producto, precio_anterior in candidatos:
             try:
-                resultado = aplicar_reprice(sku_patish, nuevo_precio)
+                resultado = aplicar_reprice(offer_sku_raw or sku_patish, nuevo_precio)
             except Exception as exc:
                 resultado = {"ok": False, "error": str(exc)}
             if resultado.get("ok"):
@@ -2023,6 +2038,7 @@ def construir_items_estado():
         precio_minimo = PRECIOS_MINIMOS.get(sku)
         item_estado = {
                 "sku_patish": sku,
+                "offer_sku_raw": variante.get("offer_sku_raw") or sku,
                 "sku_base": sku_base,
                 "sku_liverpool": variante["sku_liverpool"],
                 "product_id": product_id,
@@ -2592,7 +2608,10 @@ def api_sku_reprice(sku_patish):
         return jsonify({"ok": False, "error": f"${nuevo_precio:.0f} esta por debajo de tu minimo (${precio_minimo:.0f}) -- no se aplica"}), 400
 
     try:
-        resultado = aplicar_reprice(sku_patish, nuevo_precio)
+        # offer_sku_raw preserva espacios que Liverpool a veces tiene como parte
+        # REAL del sku -- mandar la version recortada hace que Liverpool rechace
+        # el reprice con "no existe esa oferta" aunque el SKU si exista.
+        resultado = aplicar_reprice(item.get("offer_sku_raw") or sku_patish, nuevo_precio)
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
@@ -3830,7 +3849,7 @@ def monitorear():
                         and _reservar_auto_reprice(sku_patish)
                     ):
                         auto_reprice_candidatos.append(
-                            (sku_patish, nuevo_precio_num, item.get("producto", ""), precio_mio_num)
+                            (sku_patish, item.get("offer_sku_raw") or sku_patish, nuevo_precio_num, item.get("producto", ""), precio_mio_num)
                         )
             ULTIMO_LAST_CHECKED[sku_patish] = fecha_hora
             ULTIMO_SOURCE[sku_patish] = r.get("source", "")
