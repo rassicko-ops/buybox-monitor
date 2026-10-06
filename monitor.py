@@ -1870,13 +1870,21 @@ def consultar_status_import(import_id):
 
 
 def consultar_error_report_import(import_id):
+    """Liverpool regresa este reporte como CSV (Content-Type: text/csv), no JSON --
+    intentar .json() aqui tronaba con un error generico ("Extra data: line 1
+    column 6...") que ocultaba el motivo real del rechazo. Se parsea el CSV y se
+    regresa como lista de dicts, igual de facil de leer que si fuera JSON."""
     headers = {"apikey": LIVERPOOL_API_KEY}
     resp = requests.get(
         f"{LIVERPOOL_BASE_URL}/api/offermanagement/pricing/imports/{import_id}/error_report",
         headers=headers, params={"shop_ids": LIVERPOOL_SHOP_ID}, timeout=20,
     )
     resp.raise_for_status()
-    return resp.json()
+    try:
+        return resp.json()
+    except ValueError:
+        lector = csv.DictReader(io.StringIO(resp.text))
+        return {"filas": list(lector)}
 
 
 def aplicar_reprice(sku_patish, nuevo_precio):
