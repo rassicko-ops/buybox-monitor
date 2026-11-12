@@ -96,8 +96,14 @@ ULTIMO_REPRICE_MOTIVO = {}
 RESUMEN_VGC = {}
 PRECIOS_MINIMOS = {}
 VGC_OVERRIDES = {}
-VGC_RESOLVER_FALLIDOS = {}
-VGC_RESOLVER_COOLDOWN_HORAS = 6
+VGC_RESOLVER_FALLIDOS = {}  # sku_patish -> {"ts", "url", "meta"} del ultimo intento fallido
+# Una liga que no muestra el SKU no se vuelve a pedir ni a resolver hasta pasado este tiempo:
+# pedir cada 2 min una pagina que da 404 solo es ruido de bot para Liverpool.
+LIGA_REINTENTO_MINUTOS = int(os.getenv("LIGA_REINTENTO_MINUTOS", "60"))
+# Tope de SKUs que buscan su liga por ciclo, para no mandar rafagas al buscador tras un reinicio.
+LIGA_RESOLVER_MAX_POR_CICLO = int(os.getenv("LIGA_RESOLVER_MAX_POR_CICLO", "5"))
+LIGA_LOCK = threading.Lock()
+LIGA_PRESUPUESTO = {"restante": 0}
 AUTO_REPRICE_CONTADOR = {}  # sku_patish -> {"fecha": "YYYY-MM-DD", "conteo": N}
 VENTAS_CACHE = {"ts": 0, "dias": None, "data": {}}
 CATALOGO_SYNC_LOCK = threading.Lock()
@@ -367,6 +373,7 @@ a.lnk:hover{color:var(--primary)}
       <div class="insight-row"><span>Con stock</span><strong id="iv-total">—</strong></div>
       <div class="insight-row"><span>Visibles en Liverpool</span><strong id="iv-visibles">—</strong></div>
       <div class="insight-row"><span>No visibles</span><strong id="iv-novisibles">—</strong></div>
+      <div class="insight-row insight-link" onclick="event.stopPropagation();irALigaSinVerificar()" title="Activas en Liverpool, pero el monitor no encontró su página: no se está vigilando su BuyBox"><span>Activas, liga sin verificar</span><strong id="iv-sinliga">—</strong></div>
       <div class="insight-row"><span>Visibles pero no ofertando</span><strong id="iv-noofertando">—</strong></div>
     </div>
     <div class="insight-box">
@@ -426,7 +433,7 @@ a.lnk:hover{color:var(--primary)}
         <button class="fbtn state-btn" data-filter="PERDIDO" onclick="setFiltro('PERDIDO',this)">🔴 Perdiendo</button>
         <button class="fbtn state-btn" data-filter="NO_PRENDIDA" onclick="setFiltro('NO_PRENDIDA',this)">🟡 No prendida</button>
         <button class="fbtn state-btn" data-filter="SKU_INVALIDO" onclick="setFiltro('SKU_INVALIDO',this)">⛔ SKU inválido</button>
-        <button class="fbtn state-btn" data-filter="PRODUCTO_NO_EXISTE" onclick="setFiltro('PRODUCTO_NO_EXISTE',this)">404</button>
+        <button class="fbtn state-btn" data-filter="LIGA_NO_RESUELTA" onclick="setFiltro('LIGA_NO_RESUELTA',this)" title="Liverpool la reporta activa, pero el monitor no encontró su página">🔗 Liga sin verificar</button>
         <button class="fbtn state-btn" data-filter="BLOQUEADA" onclick="setFiltro('BLOQUEADA',this)">🟠 Bloqueadas</button>
         <button class="fbtn state-btn" data-filter="INACTIVA_STOCK" onclick="setFiltro('INACTIVA_STOCK',this)">⚫ Sin stock</button>
         <button class="fbtn state-btn" data-filter="SIN_DATOS" onclick="setFiltro('SIN_DATOS',this)">Sin datos</button>
@@ -489,7 +496,7 @@ a.lnk:hover{color:var(--primary)}
                 <option value="PERDIDO">Perdido</option>
                 <option value="NO_PRENDIDA">No prendida</option>
                 <option value="SKU_INVALIDO">SKU inválido</option>
-                <option value="PRODUCTO_NO_EXISTE">Producto no existe</option>
+                <option value="LIGA_NO_RESUELTA">Liga sin verificar</option>
                 <option value="SIN_DATOS_STALE">Sin datos stale</option>
                 <option value="BLOQUEADA">Bloqueada</option>
                 <option value="INACTIVA_STOCK">Sin stock</option>
@@ -531,7 +538,7 @@ const DEFAULT_COLUMN_FILTERS={
   estado:'',seller_buybox:'',precio_liverpool:'',precio_tuyo:'',stock_tuyo:'',diferencia:'',url:'',
 };
 const NUMERIC_SORT_FIELDS=new Set(['precio_liverpool','precio_tuyo','stock_tuyo','diferencia']);
-const STATE_SORT_ORDER={GANANDO_VERIFICADO:0,GANANDO:0,GANANDO_API_NO_VISIBLE:1,PERDIDO:2,NO_PRENDIDA:3,SKU_INVALIDO:4,PRODUCTO_NO_EXISTE:5,VGC_INVALIDO:6,BLOQUEADA:7,INACTIVA_STOCK:8,SIN_DATOS_STALE:9,SIN_DATOS:10};
+const STATE_SORT_ORDER={GANANDO_VERIFICADO:0,GANANDO:0,GANANDO_API_NO_VISIBLE:1,PERDIDO:2,NO_PRENDIDA:3,SKU_INVALIDO:4,PRODUCTO_NO_EXISTE:5,LIGA_NO_RESUELTA:5,VGC_INVALIDO:6,BLOQUEADA:7,INACTIVA_STOCK:8,SIN_DATOS_STALE:9,SIN_DATOS:10};
 
 let filtroActual='TODOS',confianzaActual='TODAS',accionActual='TODAS',busquedaActual='',ordenActual='producto_asc',todosItems=[],columnFilters={...DEFAULT_COLUMN_FILTERS},expandedVgc='',expandedDiag='',vgcSort='precio_asc',historialCache={},seleccionadosReprice=new Set(),loteRepricePolling=false;
 
@@ -689,6 +696,17 @@ function irANoOfertando(){
   busquedaActual='';
   accionActual='TODAS';
   setFiltro('VISIBLE_SIN_OFERTA');
+  actualizarResumenFiltros();
+  scrollTabla();
+}
+
+function irALigaSinVerificar(){
+  columnFilters={...DEFAULT_COLUMN_FILTERS};
+  document.querySelectorAll('[data-col-filter]').forEach(input=>{input.value=''});
+  document.getElementById('sku-search').value='';
+  busquedaActual='';
+  accionActual='TODAS';
+  setFiltro('LIGA_NO_RESUELTA');
   actualizarResumenFiltros();
   scrollTabla();
 }
@@ -855,6 +873,26 @@ function toggleDiagnostico(skuPatish){
   renderTabla();
 }
 
+async function guardarLiga(skuPatish){
+  const input=document.getElementById(`liga-${domIdSku(skuPatish)}`);
+  const url=input?input.value.trim():'';
+  if(!url){alert('Pega la liga del producto en liverpool.com.mx');return;}
+  try{
+    const resp=await fetch(`/api/sku/${encodeURIComponent(skuPatish)}/liga`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({url})
+    });
+    const d=await resp.json();
+    if(!d.ok){alert(d.error||'No se pudo guardar la liga');return;}
+    alert(`Liga guardada (producto ${d.product_id}). El monitor la verifica en el próximo ciclo (~2 min).`);
+    await cargarEstado();
+    expandedDiag=String(skuPatish);
+  }catch(e){
+    alert('Error de red guardando la liga');
+  }
+}
+
 async function guardarPrecioMinimo(skuPatish){
   const input=document.getElementById(`min-${domIdSku(skuPatish)}`);
   const precio=input?input.value:'';
@@ -983,6 +1021,12 @@ function detalleDiagnosticoHtml(item){
         <div class="diag-card"><div class="diag-label">Repricing</div><div class="diag-value">${item.reprice_sugerido?money(item.reprice_sugerido):'-'}<br><span style="font-size:11px;color:var(--muted)">${escapeHtml(item.reprice_motivo||item.accion_recomendada||'')}</span>${item.reprice_sugerido?`<br><button class="diag-btn" id="reprice-btn-${domIdSku(item.sku_patish)}" onclick="aplicarReprice('${escapeHtml(item.sku_patish)}')">Bajar a ${money(item.reprice_sugerido)}</button>`:''}</div></div>
         <div class="diag-card"><div class="diag-label">Acción</div><div class="diag-value">${escapeHtml(item.accion_recomendada||'-')}</div></div>
       </div>
+      ${item.estado==='LIGA_NO_RESUELTA'?`<div class="diag-card" style="margin-top:10px">
+        <div class="diag-label">Liga del producto</div>
+        <div class="diag-value" style="font-size:12px">Liverpool reporta esta oferta activa, pero el monitor no encontró su página y no está vigilando su BuyBox. Búscala en liverpool.com.mx, copia la liga y pégala aquí:</div>
+        <input id="liga-${domIdSku(item.sku_patish)}" class="min-input" style="width:100%;max-width:520px;margin-top:6px" type="text" placeholder="https://www.liverpool.com.mx/tienda/pdp/...">
+        <button class="diag-btn" onclick="guardarLiga('${escapeHtml(item.sku_patish)}')">Guardar liga</button>
+      </div>`:''}
       <div class="hist-list"><strong>Historial reciente</strong>${histHtml}</div>
     </div>
   </td></tr>`;
@@ -1059,6 +1103,7 @@ function estadoBadge(estado){
     NO_PRENDIDA:['by','NO PRENDIDA'],
     SKU_INVALIDO:['br','SKU INVALIDO'],
     PRODUCTO_NO_EXISTE:['br','PRODUCTO NO EXISTE'],
+    LIGA_NO_RESUELTA:['by','ACTIVA · LIGA SIN VERIFICAR'],
     VGC_INVALIDO:['br','VGC INVALIDO'],
     BLOQUEADA:['bo','BLOQUEADA'],
     INACTIVA_STOCK:['bgr','SIN STOCK'],
@@ -1143,6 +1188,7 @@ function renderInsights(data){
   document.getElementById('iv-total').textContent=rv.con_stock??0;
   document.getElementById('iv-visibles').textContent=rv.visibles??0;
   document.getElementById('iv-novisibles').textContent=rv.no_visibles??0;
+  document.getElementById('iv-sinliga').textContent=rv.sin_verificar??0;
   document.getElementById('iv-noofertando').textContent=rv.no_ofertando??0;
   const acciones=document.getElementById('acciones-box');
   if(acciones){
@@ -1437,7 +1483,7 @@ def es_seller_mio(seller, seller_id):
 ESTADOS_GANANDO_VERIFICADO = {"GANANDO", "GANANDO_VERIFICADO"}
 ESTADOS_BUENOS_TRANSITORIOS = {"GANANDO", "GANANDO_VERIFICADO", "PERDIDO", "NO_PRENDIDA", "GANANDO_API_NO_VISIBLE"}
 ESTADOS_INVALIDOS = {"SKU_INVALIDO", "PRODUCTO_NO_EXISTE", "VGC_INVALIDO"}
-ESTADOS_NO_GANAN = {"GANANDO_API_NO_VISIBLE", "SKU_INVALIDO", "PRODUCTO_NO_EXISTE", "SIN_DATOS_STALE", "VGC_INVALIDO"}
+ESTADOS_NO_GANAN = {"GANANDO_API_NO_VISIBLE", "SKU_INVALIDO", "PRODUCTO_NO_EXISTE", "SIN_DATOS_STALE", "VGC_INVALIDO", "LIGA_NO_RESUELTA"}
 
 
 def normalizar_estado_persistido(estado):
@@ -1778,6 +1824,15 @@ def procesar_catalogo_api(ofertas):
         # tiene el ID real para esos casos puntuales.
         product_id = VGC_OVERRIDES.get(sku_oferta) or sku_producto
         url = f"https://www.liverpool.com.mx/tienda/pdp/producto/{product_id}?skuid={sku_producto}"
+        # Codigo de barras (EAN/UPC): ultimo recurso para encontrar la liga en el buscador.
+        ean = next(
+            (
+                limpiar_texto(ref.get("reference"))
+                for ref in (oferta.get("product_references") or [])
+                if isinstance(ref, dict) and re.fullmatch(r"\d{8,14}", limpiar_texto(ref.get("reference")))
+            ),
+            "",
+        )
 
         nuevos.append(
             {
@@ -1795,6 +1850,7 @@ def procesar_catalogo_api(ofertas):
                 "sku_liverpool": sku_producto,
                 "product_id": product_id,
                 "vgc": multi_offer_sku,
+                "ean": ean,
                 "producto": producto,
                 "estado_oferta": estado_inicial,
                 "motivo": motivo,
@@ -2128,18 +2184,23 @@ def es_no_ofertando_con_stock_item(item):
 ESTADOS_OFERTA_ACTIVA = {
     "GANANDO", "GANANDO_VERIFICADO", "GANANDO_API_NO_VISIBLE", "PERDIDO", "NO_PRENDIDA",
     "SKU_INVALIDO", "PRODUCTO_NO_EXISTE", "VGC_INVALIDO", "SIN_DATOS", "SIN_DATOS_STALE",
+    "LIGA_NO_RESUELTA",
 }
 
 
 def calcular_resumen_visibilidad(items):
     con_stock = [item for item in items if item.get("estado") in ESTADOS_OFERTA_ACTIVA and tiene_stock_item(item)]
     visibles = [item for item in con_stock if es_visible_item(item)]
-    no_visibles = [item for item in con_stock if not es_visible_item(item)]
+    # Liga sin verificar = Liverpool la reporta activa pero el monitor no encontro su pagina:
+    # no se sabe si se ve o no, asi que no se cuenta como "no visible".
+    sin_verificar = [item for item in con_stock if item.get("estado") == "LIGA_NO_RESUELTA"]
+    no_visibles = [item for item in con_stock if not es_visible_item(item) and item.get("estado") != "LIGA_NO_RESUELTA"]
     no_ofertando = [item for item in con_stock if es_no_ofertando_con_stock_item(item)]
     return {
         "con_stock": len(con_stock),
         "visibles": len(visibles),
         "no_visibles": len(no_visibles),
+        "sin_verificar": len(sin_verificar),
         "no_ofertando": len(no_ofertando),
     }
 
@@ -2208,6 +2269,8 @@ def accion_recomendada_item(item):
         return "Resolver bloqueo Liverpool"
     if estado == "INACTIVA_STOCK":
         return "Agregar stock"
+    if estado == "LIGA_NO_RESUELTA":
+        return "Activa en Liverpool; pega su liga en Diagnóstico para vigilar el BuyBox"
     if estado in ESTADOS_INVALIDOS:
         return "Validar SKU/PDP"
     return ""
@@ -2326,7 +2389,7 @@ def calcular_diferencia_item(item):
 ESTADO_ORDEN = {
     "GANANDO_VERIFICADO": 0, "GANANDO": 0, "GANANDO_API_NO_VISIBLE": 1,
     "PERDIDO": 2, "NO_PRENDIDA": 3, "SKU_INVALIDO": 4,
-    "PRODUCTO_NO_EXISTE": 5, "VGC_INVALIDO": 6,
+    "PRODUCTO_NO_EXISTE": 5, "LIGA_NO_RESUELTA": 5, "VGC_INVALIDO": 6,
     "BLOQUEADA": 7, "INACTIVA_STOCK": 8, "SIN_DATOS_STALE": 9, "SIN_DATOS": 10,
 }
 
@@ -2549,6 +2612,7 @@ def api_estado():
         "ganando_api_no_visible": sum(1 for item in items if item["estado"] == "GANANDO_API_NO_VISIBLE"),
         "sku_invalido": sum(1 for item in items if item["estado"] == "SKU_INVALIDO"),
         "producto_no_existe": sum(1 for item in items if item["estado"] == "PRODUCTO_NO_EXISTE"),
+        "liga_no_resuelta": sum(1 for item in items if item["estado"] == "LIGA_NO_RESUELTA"),
         "sin_datos_stale": sum(1 for item in items if item["estado"] == "SIN_DATOS_STALE"),
         "bloqueadas": sum(1 for item in items if item["estado"] == "BLOQUEADA"),
         "sin_stock": sum(1 for item in items if item["estado"] == "INACTIVA_STOCK"),
@@ -2583,6 +2647,38 @@ def api_precio_minimo():
         PRECIOS_MINIMOS[sku] = precio
     guardar_precios_minimos()
     return jsonify({"ok": True, "sku_patish": sku, "precio_minimo": formatear_precio(PRECIOS_MINIMOS.get(sku, ""))})
+
+
+def product_id_desde_liga(texto):
+    """Saca el product_id de una liga de Liverpool copiada del navegador
+    (.../tienda/pdp/<nombre>/<product_id>?skuid=...) o de un numero pegado solo."""
+    texto = limpiar_texto(texto)
+    match = re.search(r"/pdp/(?:[^/?#]+/)?(\d{8,})(?:[/?#]|$)", texto) or re.fullmatch(r"(\d{8,})", texto)
+    return match.group(1) if match else ""
+
+
+@app.route("/api/sku/<path:sku_patish>/liga", methods=["POST"])
+def api_sku_liga(sku_patish):
+    """Guarda la liga correcta que el usuario copio de liverpool.com.mx para un SKU cuya pagina
+    el monitor no pudo encontrar solo. Solo se toma el product_id; que la pagina de verdad
+    muestre este SKU lo confirma el siguiente ciclo del monitor (~2 min)."""
+    sku_patish = limpiar_texto(sku_patish)
+    data = request.get_json(silent=True) or {}
+    product_id = product_id_desde_liga(data.get("url"))
+    if not product_id:
+        return jsonify({"ok": False, "error": "Pega la liga completa del producto en liverpool.com.mx (termina en un número largo)"}), 400
+    items = [item for item in CATALOGO if limpiar_texto(item.get("sku_patish", "")) == sku_patish]
+    if not items:
+        return jsonify({"ok": False, "error": "SKU no encontrado"}), 404
+    with LIGA_LOCK:
+        VGC_OVERRIDES[sku_patish] = product_id
+        guardar_vgc_overrides()
+        VGC_RESOLVER_FALLIDOS.pop(sku_patish, None)
+        for item in items:
+            item["product_id"] = product_id
+            item["url"] = liga_pdp(product_id, item["sku_liverpool"])
+    guardar_catalogo_persistido(CATALOGO)
+    return jsonify({"ok": True, "sku_patish": sku_patish, "product_id": product_id, "url": items[0]["url"]})
 
 
 @app.route("/api/sku/<path:sku_patish>/reprice", methods=["POST"])
@@ -2829,6 +2925,7 @@ def status():
         "ganando_api_no_visible": sum(1 for valor in ULTIMO_ESTADO.values() if valor == "GANANDO_API_NO_VISIBLE"),
         "sku_invalido": sum(1 for valor in ULTIMO_ESTADO.values() if valor == "SKU_INVALIDO"),
         "producto_no_existe": sum(1 for valor in ULTIMO_ESTADO.values() if valor == "PRODUCTO_NO_EXISTE"),
+        "liga_no_resuelta": sum(1 for valor in ULTIMO_ESTADO.values() if valor == "LIGA_NO_RESUELTA"),
         "sin_datos_stale": sum(1 for valor in ULTIMO_ESTADO.values() if valor == "SIN_DATOS_STALE"),
         "total": len(CATALOGO),
         "ts": datetime.now(CDMX_TZ).strftime("%Y-%m-%d %H:%M:%S"),
@@ -3234,13 +3331,15 @@ def generar_estado_actual():
     no_prendidas = [item for item in CATALOGO if ULTIMO_ESTADO.get(item["sku_patish"]) == "NO_PRENDIDA"]
     inconsistentes = [item for item in CATALOGO if ULTIMO_ESTADO.get(item["sku_patish"]) == "GANANDO_API_NO_VISIBLE"]
     invalidos = [item for item in CATALOGO if ULTIMO_ESTADO.get(item["sku_patish"]) in ESTADOS_INVALIDOS]
+    sin_liga = [item for item in CATALOGO if ULTIMO_ESTADO.get(item["sku_patish"]) == "LIGA_NO_RESUELTA"]
     bloqueadas = [item for item in CATALOGO if item["estado_oferta"] == "BLOQUEADA"]
     now_str = datetime.now(CDMX_TZ).strftime("%H:%M:%S")
     lineas = [
         f"📡 <b>ESTADO ACTUAL</b> - {now_str}", "",
         f"🟢 Ganando: {len(ganando)}", f"🔴 Perdiendo: {len(perdiendo)}",
         f"🟡 No prendida: {len(no_prendidas)}", f"⚠️ Inconsistentes: {len(inconsistentes)}",
-        f"⛔ Invalidos/no existe: {len(invalidos)}", f"🟠 Bloqueadas Liverpool: {len(bloqueadas)}",
+        f"⛔ Invalidos/no existe: {len(invalidos)}", f"🔗 Activas sin liga verificada: {len(sin_liga)}",
+        f"🟠 Bloqueadas Liverpool: {len(bloqueadas)}",
         f"📦 Total catalogo: {len(CATALOGO)}",
     ]
     if ganando:
@@ -3416,6 +3515,16 @@ def _meta_api(source, status_code=None, error_message="", confidence=""):
     }
 
 
+def pagina_tiene_sku(texto_rsc, sku_id):
+    """Misma ancla que usa extraer_buybox_offerlisting: si no esta, la pagina no es de este SKU."""
+    return bool(texto_rsc and sku_id) and f'"skuId":"{sku_id}"' in texto_rsc
+
+
+def liga_no_muestra_sku(meta):
+    """404 o una pagina de otro producto: la liga esta mal (no es una falla pasajera)."""
+    return meta.get("status_code") == 404 or meta.get("confidence") == "pdp_sin_sku"
+
+
 def _fetch_pdp_variantes(url):
     """Lee las ofertas del SKU desde el PDP público (1 solo request). El "Vendido por"
     renderizado en el HTML manda sobre bestOfferSellerName (puede ir desfasado); el arreglo
@@ -3438,6 +3547,9 @@ def _fetch_pdp_variantes(url):
         ganador_render = extraer_vendedor_renderizado(r.text)
         ganador = ganador_render or ganador_json
         if not ganador:
+            if not pagina_tiene_sku(texto_rsc, sku_id):
+                # La pagina existe pero es de otro producto (liga vieja o equivocada).
+                return {}, _meta_api("PDP", r.status_code, "PDP sin este SKU", "pdp_sin_sku")
             return {}, _meta_api("PDP", r.status_code, "PDP sin variantes/bestOffer")
 
         if ganador_render and limpiar_texto(ganador_render).lower() != limpiar_texto(ganador_json or "").lower():
@@ -3580,19 +3692,34 @@ def _resumen_vgc(product_id, resultados):
     }
 
 
-def _resolver_product_id_via_busqueda(sku_producto):
-    """Busca el SKU exacto (no el titulo) en el buscador PUBLICO de Liverpool -- cuando el
-    termino de busqueda coincide con un SKU real, Liverpool redirige automaticamente al PDP
+def liga_pdp(product_id, sku_liverpool):
+    return f"https://www.liverpool.com.mx/tienda/pdp/producto/{product_id}?skuid={sku_liverpool}"
+
+
+def _pagina_muestra_sku(product_id, sku_liverpool):
+    """True solo si la pagina de ese product_id responde y de verdad contiene este SKU
+    (un 200 solo no basta: puede ser la pagina de otro producto)."""
+    try:
+        resp = requests.get(liga_pdp(product_id, sku_liverpool), headers=HEADERS, timeout=15)
+    except Exception:
+        return False
+    return resp.status_code == 200 and pagina_tiene_sku(extraer_rsc_decoded(resp.text), sku_liverpool)
+
+
+def _resolver_product_id_via_busqueda(termino, sku_liverpool=None):
+    """Busca un termino exacto (SKU o codigo de barras, no el titulo) en el buscador PUBLICO
+    de Liverpool -- cuando coincide con un producto real, Liverpool redirige directo al PDP
     correcto. Mucho mas confiable que buscar por titulo (que solo da una lista de resultados,
-    sin redirect) -- confirmado 11/11 en pruebas reales tras encontrar este comportamiento.
-    Solo se acepta si hubo redirect a una URL /pdp/ real y esa URL responde 200 con nuestro
-    skuid -- si no, no adivina. Mismo tipo de trafico publico que ya hace el monitor 24/7."""
-    if not sku_producto:
+    sin redirect) -- confirmado 11/11 por SKU en pruebas reales. Solo se acepta si hubo
+    redirect a una URL /pdp/ real y esa pagina contiene nuestro SKU -- si no, no adivina.
+    Mismo tipo de trafico publico que ya hace el monitor 24/7."""
+    sku_liverpool = sku_liverpool or termino
+    if not termino:
         return None
     try:
         resp = requests.get(
             "https://www.liverpool.com.mx/tienda",
-            params={"s": sku_producto},
+            params={"s": termino},
             headers=HEADERS,
             timeout=15,
             allow_redirects=True,
@@ -3605,47 +3732,92 @@ def _resolver_product_id_via_busqueda(sku_producto):
     if not match:
         return None
     candidato = match.group(1)
-    try:
-        verif = requests.get(
-            f"https://www.liverpool.com.mx/tienda/pdp/producto/{candidato}",
-            params={"skuid": sku_producto},
-            headers=HEADERS,
-            timeout=15,
-        )
-    except Exception:
-        return None
-    return candidato if verif.status_code == 200 else None
+    return candidato if _pagina_muestra_sku(candidato, sku_liverpool) else None
+
+
+def _resolver_liga(item):
+    """Busca el product_id real del PDP cuando la liga actual no muestra el SKU. Primero prueba
+    IDs que ya trae la API oficial (product_sku sirve en productos de una sola variante;
+    multiOfferSku es el mismo numero que la columna VGC del Excel del portal) y despues el
+    buscador publico por SKU y por codigo de barras. Regresa (product_id, via) o (None, None)."""
+    sku_liverpool = normalizar_identificador(item.get("sku_liverpool"))
+    actual = normalizar_identificador(item.get("product_id"))
+    for via, candidato in (
+        ("product_sku", sku_liverpool),
+        ("multiOfferSku", normalizar_identificador(item.get("vgc"))),
+    ):
+        if re.fullmatch(r"\d{8,}", candidato or "") and candidato != actual and _pagina_muestra_sku(candidato, sku_liverpool):
+            return candidato, via
+    for via, termino in (
+        ("busqueda_sku", sku_liverpool),
+        ("busqueda_ean", limpiar_texto(item.get("ean"))),
+    ):
+        candidato = _resolver_product_id_via_busqueda(termino, sku_liverpool) if termino else None
+        if candidato:
+            return candidato, via
+    return None, None
+
+
+def _tomar_turno_resolver():
+    with LIGA_LOCK:
+        if LIGA_PRESUPUESTO["restante"] <= 0:
+            return False
+        LIGA_PRESUPUESTO["restante"] -= 1
+        return True
+
+
+def _corregir_liga(item, product_id, via):
+    """Fija la liga resuelta. Si sirvio el product_sku tal cual, el override viejo sobra: asi el
+    siguiente sync del catalogo arma solo la liga simple."""
+    sku_patish = item["sku_patish"]
+    with LIGA_LOCK:
+        if via == "product_sku":
+            VGC_OVERRIDES.pop(sku_patish, None)
+        else:
+            VGC_OVERRIDES[sku_patish] = product_id
+        guardar_vgc_overrides()
+        VGC_RESOLVER_FALLIDOS.pop(sku_patish, None)
+    item["product_id"] = product_id
+    item["url"] = liga_pdp(product_id, normalizar_identificador(item["sku_liverpool"]))
+    print(f"🔗 Liga corregida {sku_patish} ({via}): {item['url']}")
 
 
 def _procesar_grupo_producto(product_id, items_grupo):
     """Obtiene datos de buybox vía mirakl/offerListing (1 request por SKU). Thread-safe.
     allOffers/offersListing (APIs viejas de Liverpool) ya no existen (404 permanente desde su
-    migración a Next.js App Router) -> ya no se llaman, solo agregaban tráfico muerto."""
+    migración a Next.js App Router) -> ya no se llaman, solo agregaban tráfico muerto.
+
+    Una liga que da 404 o que abre otro producto NO significa que la oferta no exista: el
+    catalogo (API oficial) ya dijo que esta activa. Se intenta resolver la liga buena (tambien
+    cuando la liga venia de un override viejo) y, si no se puede, queda LIGA_NO_RESUELTA."""
 
     resultados = []
     for item in items_grupo:
+        sku_patish = item["sku_patish"]
         sku_liverpool = normalizar_identificador(item["sku_liverpool"])
-        pdp_mapa, pdp_meta = _fetch_pdp_variantes(item["url"])
+        ahora = datetime.now(CDMX_TZ)
+        fallo = VGC_RESOLVER_FALLIDOS.get(sku_patish)
+        fallo_vigente = bool(
+            fallo and fallo.get("url") == item["url"]
+            and ahora - fallo["ts"] < timedelta(minutes=LIGA_REINTENTO_MINUTOS)
+        )
+        if fallo_vigente:
+            # Esta misma liga ya fallo y ya se busco la buena hace poco: no se vuelve a pedir.
+            pdp_mapa, pdp_meta = {}, dict(fallo["meta"])
+        else:
+            pdp_mapa, pdp_meta = _fetch_pdp_variantes(item["url"])
         pdp_variante = pdp_mapa.get(sku_liverpool)
 
-        if not pdp_variante and pdp_meta.get("status_code") == 404:
-            sku_patish = item["sku_patish"]
-            if sku_patish not in VGC_OVERRIDES:
-                ultimo_fallo = VGC_RESOLVER_FALLIDOS.get(sku_patish)
-                debe_intentar = ultimo_fallo is None or (
-                    datetime.now(CDMX_TZ) - ultimo_fallo > timedelta(hours=VGC_RESOLVER_COOLDOWN_HORAS)
-                )
-                if debe_intentar:
-                    resuelto = _resolver_product_id_via_busqueda(sku_liverpool)
-                    if resuelto:
-                        VGC_OVERRIDES[sku_patish] = resuelto
-                        guardar_vgc_overrides()
-                        item["product_id"] = resuelto
-                        item["url"] = f"https://www.liverpool.com.mx/tienda/pdp/producto/{resuelto}?skuid={sku_liverpool}"
-                        pdp_mapa, pdp_meta = _fetch_pdp_variantes(item["url"])
-                        pdp_variante = pdp_mapa.get(sku_liverpool)
-                    else:
-                        VGC_RESOLVER_FALLIDOS[sku_patish] = datetime.now(CDMX_TZ)
+        if not pdp_variante and not fallo_vigente and liga_no_muestra_sku(pdp_meta) and _tomar_turno_resolver():
+            resuelto, via = _resolver_liga(item)
+            if resuelto:
+                _corregir_liga(item, resuelto, via)
+                pdp_mapa, pdp_meta = _fetch_pdp_variantes(item["url"])
+                pdp_variante = pdp_mapa.get(sku_liverpool)
+            else:
+                VGC_RESOLVER_FALLIDOS[sku_patish] = {"ts": ahora, "url": item["url"], "meta": dict(pdp_meta)}
+        if pdp_variante:
+            VGC_RESOLVER_FALLIDOS.pop(sku_patish, None)
 
         base_result = {
             "item": item, "sku_patish": item["sku_patish"],
@@ -3682,8 +3854,15 @@ def _procesar_grupo_producto(product_id, items_grupo):
             })
             continue
 
-        if pdp_meta.get("status_code") == 404:
-            resultados.append({**base_result, "nuevo_estado": "PRODUCTO_NO_EXISTE", "seller": "", "price": ""})
+        if liga_no_muestra_sku(pdp_meta):
+            nota = f"Activa en Liverpool; liga sin verificar ({pdp_meta.get('error_message') or 'sin página'})"
+            fallo = VGC_RESOLVER_FALLIDOS.get(sku_patish)
+            if fallo:
+                nota += f" · se reintenta {(fallo['ts'] + timedelta(minutes=LIGA_REINTENTO_MINUTOS)).strftime('%H:%M')}"
+            resultados.append({
+                **base_result, "error_message": nota,
+                "nuevo_estado": "LIGA_NO_RESUELTA", "seller": "", "price": "",
+            })
             continue
 
         resultados.append({**base_result, "nuevo_estado": "SIN_DATOS", "seller": "", "price": ""})
@@ -3714,6 +3893,8 @@ def monitorear():
     if not CATALOGO:
         print(f"[{now_str}] ⚠️ Catalogo vacio - sube el Excel desde el panel web")
         return
+
+    LIGA_PRESUPUESTO["restante"] = LIGA_RESOLVER_MAX_POR_CICLO
 
     # Marcar items no activos
     for item in CATALOGO:
@@ -3814,6 +3995,11 @@ def monitorear():
                 ULTIMO_ESTADO[sku_patish] = "SIN_DATOS_STALE"
         else:
             ULTIMO_ESTADO[sku_patish] = nuevo_estado
+        if nuevo_estado == "SIN_DATOS":
+            # No cuenta como revision buena (last_checked no se mueve), pero el diagnostico debe
+            # decir el motivo de hoy y no el de la ultima vez que funciono.
+            ULTIMO_STATUS_CODE[sku_patish] = r.get("status_code", "")
+            ULTIMO_ERROR_MESSAGE[sku_patish] = r.get("error_message", "")
         if nuevo_estado != "SIN_DATOS":
             # Liverpool ya no expone el stock por seller en la página pública de ofertas;
             # el stock propio se conoce de todos modos por el catálogo (columna Cantidad).
@@ -3878,6 +4064,7 @@ def monitorear():
         f" 🔴{conteos_actuales.get('PERDIDO', 0)} 🟡{conteos_actuales.get('NO_PRENDIDA', 0)}"
         f" ⚠️{conteos_actuales.get('GANANDO_API_NO_VISIBLE', 0)}"
         f" ⛔{conteos_actuales.get('SKU_INVALIDO', 0) + conteos_actuales.get('PRODUCTO_NO_EXISTE', 0)}"
+        f" 🔗{conteos_actuales.get('LIGA_NO_RESUELTA', 0)}"
         f" 🧊{conteos_actuales.get('SIN_DATOS_STALE', 0)}"
         f" / {activas} activas / {len(CATALOGO)} total"
     )
@@ -3945,7 +4132,7 @@ def imprimir_resumen_local():
     print(f"Total SKUs: {len(items)}")
     for estado in [
         "GANANDO_VERIFICADO", "GANANDO_API_NO_VISIBLE", "PERDIDO", "NO_PRENDIDA",
-        "SKU_INVALIDO", "PRODUCTO_NO_EXISTE", "VGC_INVALIDO", "SIN_DATOS",
+        "SKU_INVALIDO", "PRODUCTO_NO_EXISTE", "LIGA_NO_RESUELTA", "VGC_INVALIDO", "SIN_DATOS",
         "SIN_DATOS_STALE", "BLOQUEADA", "INACTIVA_STOCK",
     ]:
         print(f"{estado}: {conteos.get(estado, 0)}")
